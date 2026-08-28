@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#08090b" />
+    <script>
+      (() => {
+        let stored = null;
+        try { stored = localStorage.getItem('crypto-toolkit-theme'); } catch {}
+        const theme = stored === 'light' || stored === 'dark'
+          ? stored
+          : matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme === 'light' ? 'only light' : 'only dark';
+        document.documentElement.style.backgroundColor = theme === 'light' ? '#f1f3f6' : '#08090b';
+        document.querySelector('meta[name="theme-color"]')?.setAttribute(
+          'content',
+          theme === 'light' ? '#f1f3f6' : '#08090b',
+        );
+      })();
+    </script>
+    <meta
+      name="description"
+      content="纯浏览器本地运行的密码学工具：AES-256-GCM、ChaCha20-Poly1305 文件与文本加密、端到端私聊与多算法完整性校验"
+    />
+    <title>Crypto Toolkit · 本地密码学工具</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
