@@ -210,9 +210,11 @@ export default function IntegrityChecker() {
     const blake3Only = algorithms.length === 1 && algorithms[0] === 'BLAKE3';
     const largeSequentialWorkload = averageFileBytes >= 128 * 1024 * 1024 || largestFileBytes >= 256 * 1024 * 1024;
 
-    // BLAKE3 SIMD 的计算吞吐远高于浏览器 File/Blob I/O。大文件场景如果盲目按 CPU
-    // 核数扩 Worker，会让多个文件的 read-ahead 同时争抢同一存储设备，反而破坏顺序吞吐。
-    // 小文件批量仍保留较高并行度，用于隐藏打开文件 / Provider 调用等固定延迟。
+    // BLAKE3 SIMD 吞吐远高于浏览器 File/Blob I/O：大文件按核数扩 Worker 会让多文件 read-ahead
+    // 争抢同一存储设备、破坏顺序吞吐；小文件批量仍保留较高并行度，以隐藏打开文件等固定延迟。
+    // BLAKE3 SIMD outpaces browser File/Blob I/O: scaling workers by core count on large files
+    // lets read-ahead fight over one device and hurts sequential throughput; small batches
+    // keep higher parallelism to hide fixed open/provider latencies.
     const desiredConcurrency = blake3Only && largeSequentialWorkload
       ? isMobile ? 1 : 2
       : isMobile
@@ -249,7 +251,7 @@ export default function IntegrityChecker() {
       if (outcome === 'cancelled') {
         toast.info('批量校验已取消');
       } else if (outcome === 'error') {
-        // The worker error handler already displayed the concrete browser error.
+        // 具体浏览器错误已由 worker 错误处理展示 / The worker error handler already displayed the concrete browser error.
       } else if (failed > 0) {
         toast.warning(`批量计算完成，${failed.toLocaleString()} 个文件失败`);
       } else {

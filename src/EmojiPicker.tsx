@@ -1,7 +1,8 @@
 /**
  * 轻量自包含表情面板：精选分组 + 最近使用。
- * 不引入第三方 emoji 数据库（那些库需要从 CDN 拉取 ~1MB 数据）--
- * 私密聊天工具坚持零外部请求，精选集硬编码进 bundle（约 2KB）。
+ * Lightweight self-contained emoji picker: curated groups + recents.
+ * 不引入第三方 emoji 数据库（需从 CDN 拉取 ~1MB）；私密工具坚持零外部请求，精选集硬编码进 bundle（约 2KB）。
+ * No third-party emoji DB (~1MB CDN fetch); zero external requests, curated set hardcoded (~2KB).
  */
 import { useEffect, useRef, useState } from 'react';
 
@@ -60,7 +61,7 @@ function saveRecent(emoji: string): string[] {
   try {
     localStorage.setItem(RECENT_KEY, JSON.stringify(next));
   } catch {
-    /* 隐私模式下忽略 */
+    /* 隐私模式下忽略 / Ignored in private mode */
   }
   return next;
 }

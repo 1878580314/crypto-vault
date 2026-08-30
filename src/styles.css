@@ -212,6 +212,33 @@ footer {
   transition: 150ms ease;
 }
 
+.repo-link {
+  height: 39px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+  color: #8a929d;
+  text-decoration: none;
+  font-size: 11px;
+  font-weight: 680;
+  white-space: nowrap;
+  transition: 150ms ease;
+}
+
+.repo-link:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.blog-link {
+  color: var(--muted);
+}
+
 .theme-toggle:hover {
   border-color: var(--line-strong);
   color: var(--text);
@@ -2514,9 +2541,13 @@ footer {
     font-size: 14px;
   }
 
+  .brand > span:last-child {
+    display: none;
+  }
+
   .brand-mark {
-    width: 38px;
-    height: 38px;
+    width: 36px;
+    height: 36px;
     border-radius: 12px;
   }
 
@@ -2526,8 +2557,8 @@ footer {
   }
 
   .tool-switch button {
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
     padding: 0;
     justify-content: center;
     font-size: 0;
@@ -2540,9 +2571,21 @@ footer {
   }
 
   .theme-toggle {
-    width: 44px;
-    height: 44px;
+    width: 40px;
+    height: 40px;
     border-radius: 13px;
+  }
+
+  .repo-link {
+    width: 40px;
+    height: 40px;
+    justify-content: center;
+    padding: 0;
+    border-radius: 13px;
+  }
+
+  .repo-link span {
+    display: none;
   }
 
   .hero {
@@ -3256,8 +3299,10 @@ footer {
 }
 
 /* ============================================================
-   全站半透明玻璃 · v6
+   全站半透明玻璃 · v6 Site-wide translucent glass · v6
    透明层、柔和环境色与细高光描边；不再使用厚重实体投影或透视倾斜。
+   Translucent layers, soft ambient tint and fine highlight strokes;
+   no heavy solid shadows or perspective tilt.
    ============================================================ */
 
 :root {
@@ -3820,7 +3865,7 @@ body {
 }
 
 /* ============================================================
-   视觉安全徽章 · 会话指纹核验
+   视觉安全徽章 · 会话指纹核验 Safety badge · session fingerprint check
    ============================================================ */
 
 .chat-safety-badge {
@@ -4192,14 +4237,16 @@ body {
   }
 }
 /* ============================================================
-   加密私聊 / Chat · 轻 3D 风格（v4）
+   加密私聊 · 轻 3D 风格（v4） / Encrypted chat · light 3D style (v4)
    顶光照明 + 环境影 + 接触影的柔和立体层级；
+   Top lighting + ambient shadow + contact shadow for soft depth;
    消息为受光气泡，输入区为下沉凹槽，按钮为可按压浮起件
+   Lit message bubbles, sunken composer groove, pressable raised buttons.
    ============================================================ */
 
 .chat-page {
   --chat-max: 880px;
-  /* 轻 3D 阴影体系（暗色）：内高光 + 环境投影 + 贴地接触影 */
+  /* 轻 3D 阴影体系（暗色）：内高光 + 环境投影 + 贴地接触影 / Light 3D shadows (dark): inner highlight + ambient + contact shadow */
   --raise-panel:
     0 1px 0 rgba(255, 255, 255, 0.05) inset,
     0 24px 56px -18px rgba(0, 0, 0, 0.55),
@@ -4213,7 +4260,7 @@ body {
     0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-/* ---------- 大厅 ---------- */
+/* ---------- 大厅 Lobby ---------- */
 
 .chat-lobby {
   max-width: 620px;
@@ -4388,7 +4435,7 @@ body {
   filter: drop-shadow(0 2px 5px var(--accent-soft));
 }
 
-/* ---------- 房间外壳：浮起面板 ---------- */
+/* ---------- 房间外壳：浮起面板 Room shell: raised panel ---------- */
 
 .chat-shell {
   --glass-light-x: 48%;
@@ -4629,7 +4676,7 @@ body {
   color: var(--accent);
 }
 
-/* ---------- 消息流：受光气泡 ---------- */
+/* ---------- 消息流：受光气泡 Message stream: lit bubbles ---------- */
 
 .chat-log {
   flex: 1;
@@ -4688,7 +4735,7 @@ body {
   margin-top: 3px;
 }
 
-/* 轻 3D 入场：气泡自下缘翻起（透视由 .chat-log 提供） */
+/* 轻 3D 入场：气泡自下缘翻起 / Light 3D entrance: bubbles rise from the lower edge. */
 @keyframes chat-bubble-in {
   from {
     opacity: 0;
@@ -4700,7 +4747,7 @@ body {
   }
 }
 
-/* 3D 磨砂液态玻璃：只在 hover 时倾斜，持续动态仅移动高光。 */
+/* 3D 磨砂液态玻璃：仅悬停倾斜，持续动态只移动高光。 / Frosted liquid glass: tilt on hover; otherwise move only the highlight. */
 .chat-bubble {
   --bubble-light-x: var(--glass-light-x, 48%);
   --bubble-light-y: var(--glass-light-y, 14%);
@@ -4743,7 +4790,7 @@ body {
   z-index: 1;
 }
 
-/* Rim light：高光点随 pointer / gyroscope 移动。 */
+/* 边缘光：高光随指针 / 陀螺仪移动。 / Rim light follows the pointer or gyroscope. */
 .chat-bubble::before {
   inset: -1px;
   padding: 1px;
@@ -4756,7 +4803,7 @@ body {
   opacity: 0.62;
 }
 
-/* 内层折射边：形成 2–3px 的玻璃厚度感。 */
+/* 内层折射边：形成 2–3px 玻璃厚度。 / Inner refraction edge suggests 2–3px glass thickness. */
 .chat-bubble::after {
   inset: 2px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -4771,7 +4818,7 @@ body {
   transition-duration: 48ms;
 }
 
-/* 我方消息：有色液态玻璃，保持文本对比度。 */
+/* 我方消息：有色液态玻璃，保持文本对比度。 / Own messages: tinted liquid glass with readable contrast. */
 .chat-row.mine .chat-bubble {
   border: 1px solid color-mix(in srgb, var(--primary) 52%, rgba(255, 255, 255, 0.58));
   border-radius: 16px 16px 6px 16px;
@@ -4792,7 +4839,7 @@ body {
   opacity: 0.78;
 }
 
-/* 连续消息的液态桥接：局部几何而非整组 blur/filter。 */
+/* 连续消息的液态桥接：用局部几何，不模糊整组。 / Grouped-message bridge uses local geometry, not whole-group blur. */
 .chat-liquid-bridge {
   position: absolute;
   top: -7px;
@@ -4819,7 +4866,7 @@ body {
   100% { opacity: 0.74; transform: translateY(0) scale(1); }
 }
 
-/* 第三阶段：160–240ms，消息落入列表后的弹性“duang”。 */
+/* 第三阶段：160–240ms，消息落入列表后弹性回落。 / Stage three: an elastic settle after the message lands. */
 .chat-row.send-impact {
   animation: chat-message-impact 180ms cubic-bezier(0.15, 1.55, 0.34, 1) both;
 }
@@ -4831,7 +4878,7 @@ body {
   100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
 }
 
-/* 组内连续消息收紧尾角 */
+/* 组内连续消息收紧尾角 / Tighten grouped message tails. */
 .chat-row.group-inner .chat-bubble {
   border-bottom-left-radius: 6px;
 }
@@ -4849,7 +4896,7 @@ body {
   overflow-wrap: anywhere;
 }
 
-/* 时间与勾号：inline 悬浮于最后一行右下 */
+/* 时间与勾号：行内浮于末行右下。 / Time and checks float inline at the final line's lower right. */
 .chat-meta {
   display: inline-flex;
   align-items: center;
@@ -4892,6 +4939,124 @@ body {
   max-height: 280px;
   object-fit: contain;
   border-radius: 12px;
+}
+
+.chat-image-lightbox-overlay {
+  position: fixed;
+  z-index: 700;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: clamp(12px, 3vw, 30px);
+  background: rgba(2, 5, 12, 0.8);
+  backdrop-filter: blur(20px) saturate(125%);
+  -webkit-backdrop-filter: blur(20px) saturate(125%);
+  animation: safety-overlay-in 180ms ease-out both;
+}
+
+.chat-image-lightbox-dialog {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 10px;
+  width: min(96vw, 1500px);
+  height: min(calc(100svh - 32px), 1200px);
+  max-width: 100%;
+  max-height: 100%;
+  padding: 10px;
+  border: 1px solid var(--glass-line-strong);
+  border-radius: 20px;
+  background: rgba(8, 13, 22, 0.72);
+  box-shadow: 0 42px 120px -38px rgba(0, 0, 0, 0.92), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(28px) saturate(145%);
+  -webkit-backdrop-filter: blur(28px) saturate(145%);
+  animation: safety-dialog-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.chat-image-lightbox-stage {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 13px;
+  background: rgba(0, 0, 0, 0.28);
+}
+
+.chat-image-lightbox-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  user-select: none;
+}
+
+.chat-image-lightbox-close {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 13, 22, 0.72);
+  color: #fff;
+  box-shadow: 0 10px 28px -16px rgba(0, 0, 0, 0.9);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  cursor: pointer;
+}
+
+.chat-image-lightbox-close:hover {
+  background: rgba(28, 35, 51, 0.9);
+}
+
+.chat-image-lightbox-name {
+  max-width: min(88vw, 720px);
+  margin: 0 auto 2px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .chat-image-lightbox-overlay {
+    height: 100svh;
+    padding: 8px;
+  }
+
+  .chat-image-lightbox-dialog {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    padding: 7px;
+    border-radius: 16px;
+  }
+
+  .chat-image-lightbox-stage {
+    border-radius: 10px;
+  }
+
+  .chat-image-lightbox-stage img {
+    max-width: 100%;
+    max-height: 100%;
+  }
+
+  .chat-image-lightbox-close {
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+  }
 }
 
 .chat-bubble.media {
@@ -4977,7 +5142,7 @@ body {
   margin: 4px 4px -1px 0;
 }
 
-/* 图片气泡：meta 独占底部一行 */
+/* 图片气泡：元数据独占底部一行。 / Image-bubble metadata gets its own bottom row. */
 .chat-bubble .chat-image + .chat-meta {
   float: none;
   display: flex;
@@ -4985,7 +5150,7 @@ body {
   margin: 5px 2px -1px 0;
 }
 
-/* 系统提示：居中胶囊（重协商 / 丢帧通告） */
+/* 系统提示：居中胶囊（重协商 / 丢帧通告） / System notices: centered pills for renegotiation and dropped frames. */
 .chat-row.system {
   justify-content: center;
   margin-top: 10px;
@@ -5003,7 +5168,7 @@ body {
   box-shadow: 0 2px 8px -4px rgba(0, 0, 0, 0.4);
 }
 
-/* ---------- 输入区：下沉凹槽 ---------- */
+/* ---------- 输入区：下沉凹槽 / Composer: recessed tray ---------- */
 
 .chat-transfer-progress {
   padding: 9px 22px 0;
@@ -5078,8 +5243,8 @@ body {
   min-width: 0;
 }
 
-/* 0–240ms send ritual: glitch -> lock particle -> projectile. All motion is
-   transform/opacity only; the effect DOM is removed immediately afterwards. */
+/* 0–240ms 发送动效：故障闪烁 → 锁定粒子 → 投射；仅改变 transform/opacity，随后立即移除效果 DOM。
+   0–240ms send effect: glitch → lock particle → projectile; transform/opacity only, then remove its DOM. */
 .chat-send-fx {
   position: absolute;
   inset: 0 42px 0 0;
@@ -5272,7 +5437,7 @@ body {
   opacity: 0.5;
 }
 
-/* 发送按钮：可按压浮起件 */
+/* 发送按钮：可按压浮起件 / Send button: raised pressable control. */
 .chat-send {
   display: grid;
   place-items: center;
@@ -5329,7 +5494,7 @@ body {
   cursor: help;
 }
 
-/* ---------- 表情按钮与面板 ---------- */
+/* ---------- 表情按钮与面板 / Emoji button and panel ---------- */
 
 .chat-emoji-btn {
   position: absolute;
@@ -5460,7 +5625,7 @@ body {
   max-height: 76px;
 }
 
-/* ---------- 浅色主题的轻 3D 光照 ---------- */
+/* ---------- 浅色主题的轻 3D 光照 / Subtle 3D lighting for light theme ---------- */
 
 :root[data-theme='light'] .chat-page {
   --raise-panel:
@@ -5533,10 +5698,10 @@ body {
   background: linear-gradient(180deg, #ffffff, #eef2f7);
 }
 
-/* ---------- 响应式 ---------- */
+/* ---------- 响应式 / Responsive ---------- */
 
 @media (max-width: 560px) {
-  /* --vvh 由 visualViewport 实时驱动（键盘弹出即收缩），无键盘时回落 100dvh */
+  /* --vvh 跟随 visualViewport，键盘关闭时回落 100dvh。 / --vvh follows visualViewport and falls back to 100dvh without the keyboard. */
   .chat-shell {
     min-height: calc(var(--vvh, 100dvh) - 205px);
     max-height: var(--vvh, 100dvh);
@@ -5561,7 +5726,7 @@ body {
     display: none;
   }
 
-  /* 触控目标达到 44px 舒适线 */
+  /* 触控目标至少 44px。 / Touch targets are at least 44px. */
   .chat-icon-action {
     width: 44px;
     height: 44px;
@@ -5590,7 +5755,7 @@ body {
     padding-right: 16px;
   }
 
-  /* 表情面板紧凑化：键盘弹出时确保完整可见 */
+  /* 表情面板紧凑化：键盘弹出时确保完整可见 / Compact the emoji panel above the open keyboard. */
   .emoji-pop {
     width: min(336px, calc(100vw - 32px));
   }
@@ -5636,14 +5801,14 @@ body {
   }
 }
 
-/* 横屏矮屏：聊天面板保底可用高度 */
+/* 横屏矮屏：聊天面板保底可用高度 / Preserve a usable chat height on short landscape screens. */
 @media (max-height: 500px) and (orientation: landscape) {
   .chat-shell {
     min-height: 300px;
   }
 }
 
-/* 懒加载私聊模块时的占位 */
+/* 懒加载私聊模块时的占位 / Placeholder while the private-chat module loads. */
 .chat-suspense {
   display: flex;
   align-items: center;
@@ -5655,22 +5820,22 @@ body {
 }
 
 @media (max-width: 640px) {
-  /* iOS：字号 <16px 的输入控件聚焦时会强制页面缩放，统一抬到 16px 起 */
+  /* iOS：输入字号至少 16px，避免聚焦缩放。 / iOS: keep inputs at 16px or larger to prevent focus zoom. */
   input,
   textarea,
   select {
     font-size: max(16px, 1em);
   }
 
-  /* 隐藏 420px×blur(120px) 装饰光晕：移动 GPU 上是大面积重绘源 */
+  /* 移动端隐藏大型模糊光晕，避免大面积重绘。 / Hide the large blurred glow on mobile to avoid broad repaints. */
   .ambient {
     display: none;
   }
 }
 
 /* ============================================================
-   全站轻量 3D · v5
-   只使用 CSS 光照、短距离投影与按压反馈；不引入 WebGL 或常驻动画。
+   全站轻量 3D · v5：仅用 CSS 光照、短投影与按压反馈。
+   Site-wide light 3D · v5: CSS lighting, short shadows and press feedback only.
    ============================================================ */
 
 :root {
@@ -6056,7 +6221,8 @@ body {
   }
 }
 
-/* v6 最终优先层：必须位于历史 v5 之后，确保玻璃材质不被旧 3D 规则覆盖。 */
+/* v6 最终优先层：位于历史 v5 之后，避免旧 3D 规则覆盖玻璃材质。
+   Final v6 override: follows legacy v5 so old 3D rules cannot replace the glass material. */
 
 body {
   background:

@@ -14,7 +14,9 @@ import { type AlgorithmId } from './integrity';
 
 const CHUNK_BYTES = 8 * 1024 * 1024;
 // 两个 8 MiB 读请求足以覆盖单块 SIMD BLAKE3 计算时间；更多并发在同一磁盘上
-// 容易从顺序读取退化为多文件竞争。全局并行度由 IntegrityChecker 自适应控制。
+// 容易退化为多文件竞争。全局并行度由 IntegrityChecker 自适应控制。
+// Two 8 MiB read-ahead requests cover one SIMD BLAKE3 computation; more concurrency
+// degrades into multi-file disk contention. Global parallelism is adaptive in IntegrityChecker.
 const READ_AHEAD = 2;
 
 type HashMessage = {
@@ -30,8 +32,10 @@ let cancelled = false;
 let active = false;
 
 /**
- * 每个 Dedicated Worker 只实例化一次各算法的 WASM 模块，文件之间通过 init() 复用。
- * 这对包含大量小文件的目录尤其重要：避免反复编译 / 实例化 WebAssembly。
+ * 每个 Dedicated Worker 只实例化一次各算法的 WASM 模块，文件之间通过 init() 复用；
+ * 大量小文件的目录可避免反复编译 / 实例化 WebAssembly。
+ * Each Dedicated Worker instantiates each algorithm's WASM module once and reuses it
+ * across files via init(); avoids repeated WebAssembly compilation for many small files.
  */
 const hasherCache = new Map<AlgorithmId, Promise<IHasher>>();
 let blake3Ready: Promise<void> | undefined;
@@ -80,8 +84,9 @@ async function acquireActiveHasher(id: AlgorithmId): Promise<ActiveHasher> {
         dispose: () => hasher.free(),
       };
     } catch {
-      // Older WebViews without WASM SIMD support still get the proven scalar
-      // WASM backend instead of losing integrity checking altogether.
+      // 旧 WebView 不支持 WASM SIMD 时仍回退到成熟的标量 WASM 后端，完整性校验不缺席。
+      // Older WebViews without WASM SIMD support still get the proven scalar WASM
+      // backend instead of losing integrity checking altogether.
     }
   }
 
@@ -144,9 +149,9 @@ async function hashFile(index: number, file: File, algorithms: AlgorithmId[]) {
     };
 
     if (useStream) {
-      // Prefer one continuous sequential read. Repeated Blob slicing is noticeably
-      // slower on some sandboxed filesystems/document providers even when reads are
-      // prefetched. BLAKE3 has ample CPU headroom for the smaller stream chunks.
+      // 优先一次连续顺序读：部分沙盒文件系统/文档提供器上反复 Blob.slice 明显更慢；BLAKE3 对小流块 CPU 余量充足。
+      // Prefer one continuous sequential read; repeated Blob slicing is noticeably slower
+      // on some sandboxed filesystems. BLAKE3 has ample CPU headroom for smaller stream chunks.
       const reader = file.stream().getReader();
       try {
         while (!cancelled) {

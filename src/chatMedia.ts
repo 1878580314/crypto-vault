@@ -48,8 +48,9 @@ async function compressImageLocally(file: File, onProgress?: (ratio: number) => 
         worker.postMessage(file);
       });
     } catch {
-      // A few older Safari/WebView combinations expose Worker/OffscreenCanvas but
-      // still fail canvas encoding in workers. Fall through to the local UI thread.
+      // 少数旧 Safari/WebView 组合虽暴露 Worker/OffscreenCanvas，但 worker 内 canvas 编码仍失败；回退到本地 UI 线程。
+      // A few older Safari/WebView combinations expose Worker/OffscreenCanvas but still
+      // fail canvas encoding in workers; fall through to the local UI thread.
     }
   }
 
@@ -60,8 +61,9 @@ async function compressImageLocally(file: File, onProgress?: (ratio: number) => 
     initialQuality: 0.86,
     alwaysKeepResolution: false,
     preserveExif: false,
-    // The library's own worker defaults to a jsDelivr libURL. Keep this privacy-
-    // sensitive tool fully self-contained; our dedicated worker above is bundled.
+    // 库自带 worker 默认走 jsDelivr CDN libURL；私密工具必须零外部请求，改用上方打包的专用 worker。
+    // The library's own worker defaults to a jsDelivr libURL; keep this privacy-sensitive
+    // tool fully self-contained via our dedicated bundled worker above.
     useWebWorker: false,
     onProgress: (percent) => onProgress?.(Math.min(Math.max(percent / 100, 0), 1)),
   });
@@ -118,8 +120,9 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
     },
   });
   const output = new Output({
-    // 普通 MP4 的兼容性显著好于 fMP4。StreamTarget 保留位置写语义，因此
-    // Mediabunny 可以在 finalize 时回写 mdat 头，同时媒体数据仍可边编码边发送。
+    // 普通 MP4 的兼容性显著好于 fMP4；StreamTarget 保留位置写语义，Mediabunny 可在 finalize 时回写 mdat 头，媒体数据仍可边编码边发送。
+    // Plain MP4 is far more compatible than fMP4; StreamTarget keeps positional writes, so
+    // Mediabunny rewrites the mdat header at finalize while media still streams out.
     format: new Mp4OutputFormat({ fastStart: false }),
     target: new StreamTarget(writable, { chunked: true, chunkSize: 1024 * 1024 }),
   });
@@ -138,7 +141,7 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
         return {
           codec: 'avc',
           height: Math.min(720, displayHeight),
-          // 只对高帧率视频降到 30 fps，避免把 24/25 fps 源无意义上采样。
+          // 只将高帧率视频限制到 30 fps，避免上采样 24/25 fps 源。 / Cap only high-fps video at 30 fps; do not upsample 24/25 fps sources.
           frameRate: Math.min(30, frameRate.bestGuessFrameRate),
           quality: new Quality('medium'),
           hardwareAcceleration: 'prefer-hardware',
@@ -160,6 +163,8 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
   }
 
   // 不以“压缩成功”为代价静默丢掉音轨等主媒体轨道；无法完整转换时回退原文件。
+  // Never silently drop primary tracks (e.g. audio) to call compression a success;
+  // fall back to the original file when conversion cannot complete.
   if (!conversion.isValid || conversion.utilizedTracks.length === 0 || conversion.discardedTracks.length > 0) {
     await conversion.cancel().catch(() => undefined);
     input.dispose();

@@ -1,21 +1,27 @@
 /**
  * 加密私聊协议层 v3（纯函数，无 UI / 无网络；KDF / MAC 全部采用 BLAKE3）。
+ * Encrypted chat protocol v3: pure functions, no UI or network; BLAKE3 for all KDF/MAC.
  *
- * 威胁模型：中继服务器完全不可信（可见并可篡改/重放/替换一切帧）。
+ * 威胁模型：中继服务器完全不可信（可见并可篡改 / 重放 / 替换一切帧）。
+ * Threat model: the relay is fully untrusted (sees and may tamper/replay/replace any frame).
  *
- * - 房间：22 字符 Base64URL 随机 ID +（可选）43 字符预共享密钥 PSK，
- *   均只存在于分享链接 hash 中，永不发送给中继
- * - 密钥协商（双因子混合）：
- *   master = BLAKE3keyed(roomKey, X25519(shared) ‖ PSK?) —— 任一因子不泄露即安全
- *   · 仅有 ECDH：服务器可 MITM（降级模式，UI 显著警告）
- *   · 仅 PSK 泄露：无 ECDH 因子参与会话密钥，服务器仍无法解密
- * - 公钥认证：PSK 存在时，hello 携带 BLAKE3keyed(PSK, 公钥) MAC，
- *   中继替换公钥将导致 MAC 校验失败 —— MITM 在协议层死亡
- * - 消息棘轮：双向独立 KDF 链（BLAKE3 derive_key），msgKey(n) 单向派生、用后即弃；
- *   每帧携带严格递增序号（AAD 绑定）：重放/回退严格拒绝，丢失帧跳跃对齐不中断会话；
- *   对方页面重载会更换密钥对，凭 MAC 认证的新 hello 重新协商即可恢复
- * - AEAD：XChaCha20-Poly1305，随机 192 位 nonce
- * - 临时性：一切密钥材料仅存内存，destroySession 逐字节清零
+ * - 房间：22 字符 Base64URL 随机 ID +（可选）43 字符 PSK，只存于分享链接 hash，永不发送给中继；
+ *   Room: Base64URL random ID + optional PSK live only in the share-link hash, never sent to the relay.
+ * - 密钥协商（双因子混合）：master = BLAKE3keyed(roomKey, X25519(shared) ‖ PSK?)，任一因子保密即安全；
+ *   仅 ECDH 时中继可 MITM（降级模式，UI 显著警告）；仅 PSK 泄露时仍缺 ECDH 因子，中继无法解密；
+ *   PSK 模式下 hello 携带 BLAKE3keyed(PSK, 公钥) MAC，
+ *   中继替换公钥即 MAC 失败 —— MITM 在协议层死亡。
+ *   Agreement: master = BLAKE3keyed(roomKey, X25519(shared) ‖ PSK?) — either factor staying secret suffices;
+ *   ECDH-only is MITM-able (degraded mode, UI warning); a leaked PSK alone still lacks ECDH;
+ *   with PSK the hello public-key MAC kills MITM.
+ * - 消息棘轮：双向独立 KDF 链，msgKey(n) 单向派生、用后即弃；每帧序号严格递增且 AAD 绑定：
+ *   重放 / 回退严格拒绝，丢帧跳跃对齐不中断会话；对方页面重载换新密钥对后凭认证新 hello 重协商。
+ *   Ratchet: two independent KDF chains, per-message keys one-way and used once; frame seq is
+ *   strictly increasing and AAD-bound — replays/rewinds rejected, gaps skipped with alignment;
+ *   peers renegotiate via authenticated fresh hello after a reload.
+ * - AEAD：XChaCha20-Poly1305，随机 192 位 nonce。 / AEAD: XChaCha20-Poly1305 with random 192-bit nonces.
+ * - 临时性：密钥材料仅存内存，destroySession 逐字节清零。
+ *   Ephemeral: key material lives in memory only and is byte-wise zeroed by destroySession.
  */
 import _sodium from 'libsodium-wrappers';
 import { blake3 } from '@noble/hashes/blake3.js';
@@ -37,18 +43,19 @@ const KEY_BYTES = 32;
 const MAC_BYTES = 16;
 const SEQ_BYTES = 4;
 /**
- * 单帧最多允许跨过的缺口。超过此值的帧直接拒绝，避免恶意序号触发
- * 不受控的棘轮派生循环；1024 条对正常断线重连的消息缓存仍留有余量。
+ * 单帧最多跨过 1024 条；超出即拒绝，限制恶意序号的棘轮派生，并为重连缓存留余量。
+ * Largest gap a frame may skip; larger seqs are rejected to bound ratchet derivation
+ * from malicious input. 1024 leaves headroom for reconnect message caches.
  */
 export const MAX_SEQ_GAP = 1024;
 
 const enc = (text: string) => new TextEncoder().encode(text);
 
-/** BLAKE3 derive_key（原生 KDF 模式）：context 字符串即域分离标签 */
+/** BLAKE3 derive_key（KDF 模式）：context 即域分离标签 / Native KDF mode; the context string is the domain label */
 const kdf = (context: string, material: Uint8Array, dkLen: number): Uint8Array =>
   blake3(material, { context: enc(context), dkLen });
 
-/** 线路明文（加密前的载荷） */
+/** 线路明文（加密前的载荷） / Wire plaintext (payload before encryption) */
 export type WirePayload =
   | { k: 'text'; t: string }
   | { k: 'image'; mime: string; name: string; d: Uint8Array }
@@ -64,7 +71,7 @@ export type WirePayload =
   | { k: 'media-chunk'; id: string; index: number; offset?: number; d: Uint8Array }
   | { k: 'media-end'; id: string; size: number; chunks: number }
   | { k: 'media-cancel'; id: string }
-  /** 已读回执：已确认收到对方发送链的第 upTo 条（不含） */
+  /** 已读回执：已确认收到对方发送链的第 upTo 条（不含） / Read receipt: peer's tx chain confirmed up to (exclusive) */
   | { k: 'read'; upTo: number };
 
 export const MEDIA_CHUNK_BYTES = 256 * 1024;
@@ -72,22 +79,24 @@ export const MEDIA_CHUNK_BYTES = 256 * 1024;
 export interface Ratchet {
   chain: Uint8Array;
   nextSeq: number;
-  /** 连续按序接收的最高序号 + 1（已读回执基准；跳过丢失帧时不推进，不虚报已读） */
+  /** 连续按序接收的最高序号 + 1（已读回执基准；跳过丢失帧时不推进，不虚报已读）
+   *  Highest in-order seq + 1: read-receipt basis; not advanced across gaps, never over-reports reads */
   acked: number;
 }
 
 export interface ChatSession {
   roomId: string;
-  /** 预共享密钥（来自链接；降级模式为 null） */
+  /** 预共享密钥（来自链接；降级模式为 null） / Pre-shared key from the link; null in degraded mode */
   psk: Uint8Array | null;
   publicKey: Uint8Array;
   privateKey: Uint8Array;
   sessionKey: Uint8Array | null;
   peerPublicKey: Uint8Array | null;
-  /** 双方由本次 master 独立派生的视觉安全徽章种子（32 字节，小写 64 位 hex） */
+  /** 双方由本次 master 独立派生的视觉安全徽章种子（32 字节，小写 64 位 hex）
+   *  Safety-badge seed derived from this master by both sides (32 bytes, lowercase 64-char hex) */
   safetyBadgeSeed: string | null;
   pskProtected: boolean;
-  /** 发送链与接收链（建立后生成） */
+  /** 发送链与接收链（建立后生成） / Tx and rx ratchets (created once the session is established) */
   tx: Ratchet | null;
   rx: Ratchet | null;
 }
@@ -95,7 +104,7 @@ export interface ChatSession {
 const b64 = (bytes: Uint8Array) => _sodium.to_base64(bytes, _sodium.base64_variants.URLSAFE_NO_PADDING);
 const unb64 = (text: string) => _sodium.from_base64(text, _sodium.base64_variants.URLSAFE_NO_PADDING);
 
-/** 解析房间码：<room> 或 <room>.<psk> */
+/** 解析房间码：<room> 或 <room>.<psk> / Parse a room code: <room> or <room>.<psk> */
 export function parseRoomCode(code: string): { room: string; psk: Uint8Array | null } {
   const dot = code.indexOf('.');
   if (dot === -1) return { room: code, psk: null };
@@ -111,7 +120,7 @@ export async function createSession(roomCode?: string): Promise<ChatSession> {
   const parsed = roomCode ? parseRoomCode(roomCode) : { room: null, psk: null as Uint8Array | null };
   if (parsed.psk && parsed.psk.length !== PSK_BYTES) throw new Error('预共享密钥长度无效');
   const room = parsed.room ?? b64(s.randombytes_buf(ROOM_BYTES));
-  const psk = parsed.psk ?? s.randombytes_buf(PSK_BYTES); // 默认创建即带 PSK
+  const psk = parsed.psk ?? s.randombytes_buf(PSK_BYTES); // 默认创建即带 PSK / New sessions include a PSK by default
   const pair = s.crypto_box_keypair();
   return {
     roomId: room,
@@ -127,7 +136,7 @@ export async function createSession(roomCode?: string): Promise<ChatSession> {
   };
 }
 
-/** 显式创建降级会话（无 PSK，仅 ECDH）——UI 须显著警告 */
+/** 显式创建降级会话（无 PSK，仅 ECDH）——UI 须显著警告 / Explicitly create a degraded session (no PSK, ECDH only); the UI must warn prominently */
 export async function createInsecureSession(roomId: string): Promise<ChatSession> {
   const s = await sodium();
   const pair = s.crypto_box_keypair();
@@ -153,14 +162,15 @@ export function peerPublicKeyFromText(text: string): Uint8Array {
   return unb64(text);
 }
 
-/** hello 帧的公钥 MAC（仅 PSK 模式）：BLAKE3 keyed 模式，PSK 直接作为 MAC 密钥 */
+/** hello 帧的公钥 MAC（仅 PSK 模式）：BLAKE3 keyed，PSK 即 MAC 密钥
+ *  Hello-frame public-key MAC (PSK mode only): BLAKE3 keyed mode with the PSK as the MAC key */
 export async function helloMac(session: ChatSession): Promise<string | null> {
   if (!session.psk) return null;
   await sodium();
   return b64(blake3(session.publicKey, { key: session.psk, dkLen: MAC_BYTES }));
 }
 
-/** 校验对方 hello 的公钥 MAC；失败说明公钥被替换或 PSK 不符 */
+/** 校验对方 hello 的公钥 MAC；失败说明公钥被替换或 PSK 不符 / Verify the peer hello MAC; failure means a replaced key or PSK mismatch */
 export async function verifyHelloMac(session: ChatSession, peerPublicKey: Uint8Array, mac: string | null): Promise<boolean> {
   if (!session.psk) return mac === null || mac === undefined ? true : false;
   if (typeof mac !== 'string') return false;
@@ -169,11 +179,13 @@ export async function verifyHelloMac(session: ChatSession, peerPublicKey: Uint8A
   return expected === mac;
 }
 
-/** 收到对方公钥（已通过 MAC 认证）后建立会话 */
+/** 收到对方公钥（已通过 MAC 认证）后建立会话 / Establish the session once the peer key is MAC-authenticated */
 export async function establishSession(session: ChatSession, peerPublicKey: Uint8Array): Promise<void> {
   const s = await sodium();
-  // 公钥字典序决定双方向链的归属：小者发送用链 1，大者发送用链 2。
+  // 公钥字典序决定双方向链的归属：小者发送用链 1，大者发送用链 2；
   // 先拒绝自协商，避免为失败路径派生并暂存 master。
+  // Lexicographic key order assigns chain directions: the smaller key sends on chain 1,
+  // the larger on chain 2. Self-negotiation is rejected first so no master is derived for a doomed path.
   const cmp = compareBytes(session.publicKey, peerPublicKey);
   if (cmp === 0) throw new Error('不能与自己协商');
 
@@ -188,7 +200,7 @@ export async function establishSession(session: ChatSession, peerPublicKey: Uint
   try {
     master = blake3(masterInput, { key: roomKey, dkLen: KEY_BYTES });
   } finally {
-    // ECDH / KDF 输入只在建立 master 时需要，避免在重协商后残留。
+    // ECDH / KDF 输入仅在建立 master 时需要，避免重协商后残留 / Only needed for master creation; no residue across renegotiations.
     shared.fill(0);
     masterInput.fill(0);
     roomKey.fill(0);
@@ -204,7 +216,7 @@ export async function establishSession(session: ChatSession, peerPublicKey: Uint
     safetyBadgeBytes.fill(0);
   }
 
-  // 这是重协商入口：新状态提交前清除旧会话的可复用材料。
+  // 这是重协商入口：新状态提交前清除旧会话的可复用材料 / Renegotiation entry: purge old reusable material before committing the new state.
   session.sessionKey?.fill(0);
   session.tx?.chain.fill(0);
   session.rx?.chain.fill(0);
@@ -223,7 +235,7 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length === b.length ? 0 : a.length < b.length ? -1 : 1;
 }
 
-/** 从棘轮链取第 n 条消息密钥并推进状态 */
+/** 从棘轮链取第 n 条消息密钥并推进状态 / Derive the next message key from the chain and advance it */
 function messageKey(chain: Uint8Array): Uint8Array {
   return kdf('crypta-chat:v3:msg', chain, KEY_BYTES);
 }
@@ -236,7 +248,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** 解码并验证线路载荷结构，避免无效明文也提交接收棘轮状态。 */
+/** 解码并验证线路载荷结构，避免无效明文也提交接收棘轮状态。 / Decode and validate wire payload structure; invalid plaintexts must not commit rx state. */
 function decodeWirePayload(plaintext: Uint8Array): WirePayload {
   const value: unknown = decode(plaintext);
   if (!isRecord(value) || typeof value.k !== 'string') throw new Error('载荷结构无效');
@@ -325,9 +337,10 @@ function decodeWirePayload(plaintext: Uint8Array): WirePayload {
 }
 
 /**
- * 加密一帧：[seq:u32be][nonce:24][ciphertext]
- * - 消息密钥来自发送链第 seq 步（用后即弃，单向棘轮）
- * - AAD 绑定 协议版本 : 房间 : 方向 : 序号 —— 重放/跨房/跨方向全部失败
+ * 加密一帧：[seq:u32be][nonce:24][ciphertext]；消息密钥取发送链第 seq 步，用后即弃；
+ * AAD 绑定 协议版本 : 房间 : 方向 : 序号 —— 重放/跨房/跨方向全部失败。
+ * Encrypt one frame: [seq:u32be][nonce:24][ciphertext]; the message key is tx chain step seq, single-use.
+ * AAD binds version : room : direction : seq — replays, cross-room and cross-direction frames all fail.
  */
 export async function sealFrame(
   session: ChatSession,
@@ -347,7 +360,8 @@ export async function sealFrame(
   const seqBytes = new Uint8Array(SEQ_BYTES);
   new DataView(seqBytes.buffer).setUint32(0, seq, false);
 
-  // 发送链编号：己方公钥较小者用 1，较大者用 2；接收方按对方链编号校验
+  // 发送链编号：己方公钥较小者用 1，较大者用 2；接收方按对方链编号校验。
+  // Tx chain number: 1 if our key is smaller, else 2; the receiver checks against the peer's number.
   const dir = compareBytes(session.publicKey, session.peerPublicKey!) < 0 ? '1' : '2';
   const aad = enc(`crypta-chat:v3:${session.roomId}:${dir}:${seq}`);
 
@@ -368,8 +382,10 @@ export async function sealFrame(
 }
 
 /**
- * 解密并认证一帧；重放（seq 落后）严格拒绝，丢失帧允许跳过对齐棘轮。
- * 返回 { payload, gap }：gap > 0 表示本次跳过了 gap 条未送达的帧（调用方应提示）。
+ * 解密并认证一帧；重放（seq 落后）严格拒绝，丢失帧允许跳过并对齐棘轮。
+ * 返回 { payload, gap }：gap > 0 表示跳过了 gap 条未送达的帧（调用方应提示）。
+ * Decrypt and authenticate one frame: replays are strictly rejected, gaps may be skipped to
+ * re-align the ratchet. Returns { payload, gap } where gap > 0 means that many lost frames (notify user).
  */
 export async function openFrame(
   session: ChatSession,
@@ -383,8 +399,10 @@ export async function openFrame(
   const seq = new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(0, false);
   if (seq < rx.nextSeq) throw new Error('重放帧已拒绝');
 
-  // 中继不补发：丢失的帧允许跳过（对齐棘轮位置后续续传），缺口由调用方提示用户。
+  // 中继不补发：丢失的帧允许跳过（对齐棘轮后继续），缺口由调用方提示用户。
   // 向后（重放/乱序回退）仍然严格拒绝；已读回执以 acked 为准，跳帧不虚报已读。
+  // The relay never re-sends: lost frames may be skipped (the ratchet re-aligns, delivery
+  // continues) and the caller reports gaps. Rewinds/replays stay strictly rejected; acks follow acked only.
   const expected = rx.nextSeq;
   const gap = seq - expected;
   if (gap > MAX_SEQ_GAP) {
@@ -396,7 +414,8 @@ export async function openFrame(
   const nonce = frame.subarray(SEQ_BYTES, SEQ_BYTES + NONCE_BYTES);
   const ciphertext = frame.subarray(SEQ_BYTES + NONCE_BYTES);
 
-  // 在副本上试算整条路径；认证和载荷结构验证成功前，绝不提交 rx 状态。
+  // 在副本上试算整条路径；认证与载荷结构验证成功前绝不提交 rx 状态。
+  // Trial-run the whole path on a copy; commit rx state only after auth and structure validation pass.
   let candidateChain: Uint8Array = rx.chain.slice();
   for (let skipped = 0; skipped < gap; skipped += 1) {
     const previousChain = candidateChain;
@@ -420,11 +439,12 @@ export async function openFrame(
     msgKey.fill(0);
     candidateChain.fill(0);
     // 认证/结构校验失败时 nextChain 尚未提交，不能留下派生出的密钥材料。
+    // If auth/structure checks failed, nextChain was never committed: zero the derived material.
     if (nextChain && rx.chain !== nextChain) nextChain.fill(0);
   }
 }
 
-/** 销毁会话材料（逐字节清零，含棘轮链） */
+/** 销毁会话材料（逐字节清零，含棘轮链） / Destroy session material (byte-wise zeroing, ratchet chains included) */
 export function destroySession(session: ChatSession): void {
   session.sessionKey?.fill(0);
   session.tx?.chain.fill(0);

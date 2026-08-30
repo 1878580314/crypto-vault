@@ -1,8 +1,13 @@
 /**
  * 临时高强度加密私聊（端到端）：
- * - 创建者生成随机房间，把 #chat=<room.psk> 链接交给对方；PSK 留在 URL hash，room ID 用于中继配对
+ * - 创建者生成随机房间，把 #chat=<room.psk> 链接交给对方；PSK 留在 URL hash，房间 ID 仅用于中继配对
  * - 双方 X25519 协商会话密钥，所有消息 XChaCha20-Poly1305 加密后经中继转发
- * - 消息仅存内存，刷新 / 关闭 / 断开即焚；中继服务器全程只能见到密文
+ * - 消息仅存内存，刷新 / 关闭 / 断开即焚；中继全程只见密文
+ *
+ * Ephemeral high-strength E2E chat: the creator mints a random room and shares a #chat=<room.psk>
+ * link; the PSK stays in the URL hash, the room ID only pairs at the relay. Keys are agreed via
+ * X25519 and messages are XChaCha20-Poly1305 encrypted through the relay; messages live in memory
+ * only and burn on refresh/close/disconnect — the relay sees ciphertext only.
  */
 import {
   ArrowRight,
@@ -23,9 +28,10 @@ import {
   Sparkles,
   Users,
 } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 import EmojiPicker from './EmojiPicker';
+import ImageLightbox from './ImageLightbox';
 import SafetyBadge from './SafetyBadge';
 import {
   MEDIA_CHUNK_BYTES,
@@ -65,7 +71,7 @@ interface ChatMessage {
   mediaSize?: number;
   mediaOriginalSize?: number;
   mediaCompressed?: boolean;
-  /** 我方发送链序号（已读回执匹配用） */
+  /** 我方发送链序号（已读回执匹配用） / Our tx chain seq (matched against read receipts) */
   seq?: number;
   read?: boolean;
   entrance?: 'send';
@@ -131,7 +137,7 @@ const wsUrl = () =>
 
 const inviteLink = (session: ChatSession) => `${location.origin}/crypto/#chat=${roomCodeOf(session)}`;
 
-/** 完整码 <room>.<psk> 或降级码 <room> */
+/** 完整码 <room>.<psk> 或降级码 <room> / Full code <room>.<psk> or degraded <room> */
 const CODE_RE = /^[A-Za-z0-9_-]{16,64}(\.[A-Za-z0-9_-]{20,64})?$/;
 const WS_BUFFER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
 const MEDIA_SEND_BYTES_PER_SECOND = 16 * 1024 * 1024;
@@ -160,6 +166,8 @@ interface ByteRange {
 /**
  * 稀疏媒体缓冲：支持普通顺序文件，也支持 MP4 finalize 阶段对文件头的随机回写。
  * 数据按协议块落入固定 block，覆盖写原地生效；最终 Blob 不需要再复制一份完整 Uint8Array。
+ * Sparse media buffer: handles sequential files plus random header rewrites at MP4 finalize.
+ * Data lands in fixed blocks where overwrites apply in place; the final Blob needs no full copy.
  */
 class SparseMediaBuffer {
   private readonly blocks = new Map<number, Uint8Array>();
@@ -258,6 +266,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   const [mediaProgress, setMediaProgress] = useState<MediaProgress | null>(null);
   const [sendFx, setSendFx] = useState<SendFxState | null>(null);
   const [motionMode, setMotionMode] = useState<MotionMode>('none');
+  const [previewImage, setPreviewImage] = useState<{ url: string; name: string } | null>(null);
+  const closePreviewImage = useCallback(() => setPreviewImage(null), []);
 
   const sessionRef = useRef<ChatSession | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -287,9 +297,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     });
   }, [messages]);
 
-  // Dynamic glass lighting. Desktop updates only the hovered bubble, keeping the
-  // number of compositor layers constant. Mobile orientation updates the light
-  // vector at <=30 fps; bubble geometry itself stays static for a stable frame rate.
+  // 动态玻璃光照：桌面端只更新悬停气泡，合成层数量保持恒定；
+  // 移动端转向时以 ≤30 fps 更新光向量，气泡几何保持静态以稳定帧率。
+  // Dynamic glass lighting: desktop updates only the hovered bubble (constant compositor layers);
+  // mobile orientation updates the light vector at <=30 fps while bubble geometry stays static.
   useEffect(() => {
     const shell = shellRef.current;
     const log = logRef.current;
@@ -405,8 +416,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     };
   }, [motionMode, phase]);
 
-  // Edge rubber-band: only the inner message stage moves in 3D, never the scroll
-  // container itself. This preserves native scrolling and keeps the transform cheap.
+  // 边缘橡皮筋：只有内层消息舞台做 3D 位移，绝不移动滚动容器本身；
+  // 保留原生滚动，变换开销保持低廉。
+  // Edge rubber-band: only the inner message stage moves in 3D, never the scroll container
+  // itself — native scrolling is preserved and the transform stays cheap.
   useEffect(() => {
     const log = logRef.current;
     const stage = logStageRef.current;
@@ -458,7 +471,9 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   }, [phase]);
 
   // 移动端软键盘感知：visualViewport 实际可见高度写入 --vvh，
-  // 聊天面板据此收缩，输入框始终浮在键盘上方（iOS/Android 通用）
+  // 聊天面板据此收缩，输入框始终浮在键盘上方（iOS/Android 通用）。
+  // Mobile keyboard awareness: the real visualViewport height feeds --vvh so the panel shrinks
+  // and the composer floats above the keyboard (works on iOS and Android).
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
@@ -475,7 +490,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     };
   }, []);
 
-  // 会话销毁：清零密钥、释放图片 URL、断开连接
+  // 会话销毁：清零密钥、释放图片 URL、断开连接 / Teardown: zero keys, revoke media URLs, disconnect.
   useEffect(
     () => () => {
       leavingRef.current = true;
@@ -499,7 +514,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     setStarting(true);
     let session: ChatSession | null = null;
     try {
-      // 含 '.' 的完整码走 PSK 混合模式；纯房间码为降级模式（仅 ECDH）
+      // 含 '.' 的完整码走 PSK 混合模式；纯房间码为降级模式（仅 ECDH） / Codes with '.' use PSK mode; bare room codes are degraded (ECDH only).
       session = roomCode && !roomCode.includes('.')
         ? await createInsecureSession(roomCode)
         : await createSession(roomCode);
@@ -548,27 +563,29 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         if (msg.t === 'joined') {
           reconnectAttemptsRef.current = 0;
           setLinkState('waiting-peer');
-          void sendHello(); // 房间可能已有等待者，立即广播公钥
+          void sendHello(); // 房间可能已有等待者，立即广播公钥 / The room may already have a waiter; broadcast our key now
         } else if (msg.t === 'peer-join') {
           setLinkState('waiting-peer');
-          void sendHello(); // 新同伴到来，重发公钥触发协商
+          void sendHello(); // 新同伴到来，重发公钥触发协商 / New peer arrived; resend our key to trigger negotiation
         } else if (msg.t === 'hello' && typeof msg.pub === 'string') {
           try {
             const peer = peerPublicKeyFromText(msg.pub);
-            // 公钥 MAC 认证：PSK 模式下中继无法替换公钥（不知道 PSK）
+            // 公钥 MAC 认证：PSK 模式下中继无法替换公钥（不知道 PSK） / Public-key MAC auth: in PSK mode the relay cannot swap keys (it has no PSK)
             if (!(await verifyHelloMac(session, peer, msg.mac ?? null))) {
               toast.error('公钥认证失败：双方链接不一致，或存在中间人');
               return;
             }
             // 对方页面被移动端浏览器后台回收后重载会更换密钥对：
-            // 必须重新协商，否则双方棘轮错位、后续所有帧认证失败
+            // 必须重新协商，否则双方棘轮错位、后续所有帧认证失败。
+            // A peer reloaded after mobile background eviction gets a fresh key pair: renegotiate,
+            // or the ratchets desync and every later frame fails authentication.
             const rekey = session.sessionKey !== null && session.peerPublicKey !== null &&
               !equalBytes(session.peerPublicKey, peer);
             if (!session.sessionKey || rekey) {
               await establishSession(session, peer);
               if (rekey) {
                 incomingMediaRef.current.clear();
-                // 旧会话的我方消息序号作废，避免新会话已读回执误标旧消息
+                // 作废旧会话的我方消息序号，避免新会话已读回执误标旧消息 / Void old tx seqs so new-session receipts cannot mislabel old messages
                 setMessages((prev) => prev.map((m) => (m.mine ? { ...m, seq: undefined } : m)));
                 addSystem('对方重新连接，已重新建立加密通道（视觉安全徽章已更新，请再次核验）');
               }
@@ -585,12 +602,12 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         return;
       }
 
-      // 二进制密文帧
+      // 二进制密文帧 / Binary ciphertext frame
       try {
         const { payload, gap } = await openFrame(session, new Uint8Array(event.data));
         if (gap > 0) addSystem(`有 ${gap} 条消息未能送达（中继未转发，无补发设计）`);
         if (payload.k === 'read') {
-          // 已读回执：标亮所有序号已确认的我方消息
+          // 已读回执：标亮所有序号已确认的我方消息 / Read receipt: mark our messages below upTo as read
           setMessages((prev) =>
             prev.map((m) => (m.mine && m.seq !== undefined && m.seq < payload.upTo && !m.read ? { ...m, read: true } : m)),
           );
@@ -601,6 +618,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           if (!payload.mime.toLowerCase().startsWith(`${payload.media}/`)) throw new Error('媒体 MIME 与类型不匹配');
           if (incomingMediaRef.current.has(payload.id)) throw new Error('媒体传输 ID 重复');
           // 正常 UI 同时只会发送一个媒体；保留少量并发余地，同时防止恶意同伴无限创建未完成传输。
+          // A normal UI sends one media at a time; keep a little headroom while capping
+          // hostile transfer creation.
           if (incomingMediaRef.current.size >= 4) throw new Error('同时进行的媒体传输过多');
           incomingMediaRef.current.set(payload.id, {
             media: payload.media,
@@ -670,7 +689,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             { id: newId(), mine: false, at: Date.now(), kind: 'text', text: payload.t },
           ]);
         } else if (payload.k === 'image') {
-          // 兼容旧版单帧图片消息。
+          // 兼容旧版单帧图片消息。 / Legacy single-frame image message.
           const blob = new Blob([payload.d.slice().buffer as ArrayBuffer], { type: payload.mime });
           setMessages((prev) => [
             ...prev,
@@ -688,17 +707,21 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             },
           ]);
         }
-        // 立即回执已读（对方显示双勾）
+        // 立即回执已读（对方显示双勾） / Acknowledge read immediately (the peer shows double ticks)
         sendReadReceipt();
       } catch {
         toast.error('收到无法认证的消息，已丢弃');
-        // 认证失败可能意味着双方会话错位（如旧版页面未重协商）：断开触发重新握手自愈
+        // 认证失败可能意味着双方会话错位（如旧版页面未重协商）：断开触发重新握手自愈。
+        // Auth failure may mean session desync (stale page without renegotiation): disconnect
+        // to force a rehandshake and self-heal.
         forceRehandshake();
       }
     };
 
-    // WebSocket 事件本身不会等待 async handler。媒体分片会高频到达，必须串行
-    // 推进接收棘轮与组装状态，否则多个 openFrame() 可能并发读取同一 rx.chain。
+    // WebSocket 事件本身不会等待 async handler；媒体分片高频到达时必须串行推进
+    // 接收棘轮与组装状态，否则多个 openFrame() 可能并发读取同一 rx.chain。
+    // WS events do not await async handlers; media chunks arrive fast, so the receive ratchet
+    // and assembly state must advance serially or openFrame() calls race on the same rx.chain.
     ws.onmessage = (event) => {
       receiveQueue = receiveQueue.then(() => handleMessage(event)).catch((error) => {
         console.error('chat receive queue failed', error);
@@ -709,7 +732,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
       if (wsRef.current === ws) wsRef.current = null;
       if (leavingRef.current || !sessionRef.current) return;
       if (event.code === 1013) {
-        // 房间满：可能是任意一方尚未被服务器察觉的僵尸连接占座，稍后重试
+        // 房间满：可能是未被服务器察觉的僵尸连接占座，稍后重试 / Room full: likely an unnoticed zombie connection; retry later
         setLinkState('full');
         scheduleReconnect(8000);
       } else {
@@ -722,7 +745,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
 
   const equalBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
 
-  /** 自动重连（指数退避思想：普通断线 2.5s 起，上限 6 次后停手等待手动操作） */
+  /** 自动重连（退避思想：普通断线 2.5s 起，上限 6 次后停手等待手动操作）
+   *  Auto-reconnect with backoff: 2.5s for normal drops, stops after 6 tries and waits for manual action */
   function scheduleReconnect(delay: number) {
     if (reconnectTimerRef.current !== null) return;
     if (reconnectAttemptsRef.current >= 6) return;
@@ -734,15 +758,16 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     }, delay);
   }
 
-  /** 会话错位自愈：主动断开，借 onclose 自动重连 -> peer-join -> 双方重发 hello 重新协商 */
+  /** 会话错位自愈：主动断开，借 onclose 自动重连 -> peer-join -> 双方重发 hello 重新协商
+   *  Desync self-heal: disconnect on purpose; onclose reconnects, peer-join re-triggers a hello exchange */
   function forceRehandshake() {
-    if (Date.now() - lastResyncRef.current < 5000) return; // 限频，防错误帧风暴引发重连循环
+    if (Date.now() - lastResyncRef.current < 5000) return; // 限频，防错误帧风暴引发重连循环 / Rate-limited so error-frame storms cannot loop reconnects
     lastResyncRef.current = Date.now();
     reconnectAttemptsRef.current = 0;
     wsRef.current?.close(4000, 'resync');
   }
 
-  // 回到前台时若连接已死（移动端后台冻结常见），立即重连
+  // 回到前台时若连接已死（移动端后台冻结常见），立即重连 / Reconnect immediately on foreground return if the socket died.
   useEffect(() => {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
@@ -765,8 +790,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
       return { ok: false };
     }
 
-    // WebSocket 没有标准 drain 事件。媒体分片发送时主动观察 bufferedAmount，
+    // WebSocket 没有标准 drain 事件；媒体分片发送时主动观察 bufferedAmount，
     // 把网络背压一路传回视频编码器，避免慢网络把数百 MB 数据堆进 JS 内存。
+    // WebSocket has no standard drain event; watching bufferedAmount while sending media chunks
+    // feeds backpressure into the encoder instead of piling hundreds of MB in JS memory.
     while (ws.bufferedAmount > WS_BUFFER_HIGH_WATER_BYTES) {
       await new Promise((resolve) => window.setTimeout(resolve, 18));
       if (ws.readyState !== WebSocket.OPEN) return { ok: false };
@@ -797,6 +824,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
       if (data.byteLength === 0) return;
       // 平滑媒体帧速率，与中继的按字节限流配合；避免在低延迟网络上一瞬间
       // 把数百个分片打进服务端，同时仍保留约 128 Mbps 的高吞吐上限。
+      // Smooths the media frame rate to pair with the relay's byte throttle: no instant burst
+      // of hundreds of chunks on fast networks, while keeping roughly 128 Mbps throughput.
       const now = performance.now();
       const scheduledAt = Math.max(nextSendAt, now);
       const delay = scheduledAt - now;
@@ -832,7 +861,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     try {
       await sendRequired({ k: 'media-cancel', id });
     } catch {
-      // 连接已经断开时无需再发送取消帧；接收端会随会话重连清理未完成传输。
+      // 连接已断开时无需再发取消帧；接收端随会话重连清理未完成传输 / No cancel frame needed when disconnected; the receiver cleans unfinished transfers on reconnect.
     }
   }
 
@@ -906,7 +935,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     }
   }
 
-  /** 已读回执：把已按序确认收到的对端序号告知对方（acked 不含跳跃缺口，不虚报已读） */
+  /** 已读回执：把已按序确认收到的对端序号告知对方（acked 不含跳跃缺口，不虚报已读）
+   *  Read receipt: report the in-order acked peer seq; gap skips don't advance it, so no over-reporting */
   function sendReadReceipt() {
     const session = sessionRef.current;
     if (session?.rx && session.rx.acked > 0) {
@@ -1058,8 +1088,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           mine: true,
           at: Date.now(),
           kind: 'video',
-          // 压缩路径必须预览“实际发送出去的文件”。源视频可能是 HEVC 等浏览器
-          // 无法直接播放的格式，此时继续引用原文件会错误显示 0:00。
+          // 压缩路径必须预览“实际发送出去的文件”：源视频可能是 HEVC 等浏览器
+          // 无法直接播放的格式，继续引用原文件会错误显示 0:00。
+          // The compressed path must preview the file actually being sent: source videos may be
+          // HEVC or otherwise unplayable, and keeping the original reference would show 0:00.
           mediaUrl: trackUrl(URL.createObjectURL(result.localBlob ?? file)),
           mediaMime: result.mime,
           mediaName: result.name,
@@ -1116,7 +1148,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   const invite = session ? inviteLink(session) : '';
   const degraded = session !== null && !session.pskProtected;
 
-  /* ---------------- 大厅 ---------------- */
+  /* ---------------- Lobby 大厅 ---------------- */
   if (phase === 'lobby') {
     return (
       <>
@@ -1166,7 +1198,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     );
   }
 
-  /* ---------------- 房间 ---------------- */
+  /* ---------------- Room 房间 ---------------- */
   const secure = linkState === 'secure';
   return (
     <section
@@ -1264,8 +1296,9 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
                     <button
                       type="button"
                       className="chat-image"
-                      onClick={() => message.mediaUrl && window.open(message.mediaUrl, '_blank', 'noopener')}
+                      onClick={() => message.mediaUrl && setPreviewImage({ url: message.mediaUrl, name: message.mediaName ?? '图片消息' })}
                       title={`${message.mediaName ?? '图片'} · 点击查看`}
+                      aria-haspopup="dialog"
                     >
                       <img src={message.mediaUrl} alt={message.mediaName ?? '图片消息'} />
                     </button>
@@ -1439,6 +1472,13 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           fp {String(import.meta.env.__CHAT_FP__ ?? 'dev')}
         </span>
       </div>
+      {previewImage && (
+        <ImageLightbox
+          url={previewImage.url}
+          name={previewImage.name}
+          onClose={closePreviewImage}
+        />
+      )}
     </section>
   );
 }

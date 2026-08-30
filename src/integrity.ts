@@ -65,10 +65,10 @@ export type ManifestEntry = {
   size?: number;
   hashes: Partial<Record<AlgorithmId, string>>;
   /**
-   * A structured JSON entry is one `all` group.  An unlabeled GNU line is an
-   * `any` group because a digest length can identify more than one algorithm.
-   * Keeping groups separate prevents those two meanings from being confused
-   * when a text manifest contains more than one record for a path.
+   * 一条结构化 JSON 记录即一个 `all` 组；无标签的 GNU 行是 `any` 组（同一摘要长度可对应多个算法），
+   * 分组保持独立，避免同一路径多条记录时混淆。
+   * A structured JSON entry is one `all` group; an unlabeled GNU line is an `any` group (one
+   * digest length may map to several algorithms); groups stay separate to avoid ambiguity.
    */
   expectations?: ManifestHashExpectation[];
 };
@@ -267,9 +267,9 @@ export function parseManifest(text: string): IntegrityManifest {
 }
 
 /**
- * Compare calculated hashes with one manifest entry.  Every expectation group
- * is required; within a group, `all` means every algorithm must match while
- * `any` means one candidate algorithm is enough.
+ * 将计算摘要与清单条目比较：每个期望组都必须满足；组内 `all` 要求全部算法匹配，`any` 只需一个。
+ * Compare calculated hashes with one manifest entry: every expectation group must pass;
+ * within a group `all` requires every algorithm to match, `any` needs one.
  */
 export function matchesManifestEntry(
   expected: ManifestEntry,

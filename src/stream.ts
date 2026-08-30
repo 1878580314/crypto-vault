@@ -168,15 +168,15 @@ async function cleanupExpiredOpfsTemps(root: FileSystemDirectoryHandle): Promise
       if (!name.startsWith(OPFS_TEMP_PREFIX) || !name.endsWith(OPFS_TEMP_SUFFIX) || entry.kind !== 'file') continue;
       try {
         const file = await (entry as FileSystemFileHandle).getFile();
-        // A missing/invalid timestamp is not enough evidence to reclaim a file.
+        // 缺失/无效的时间戳不足以证明文件可回收 / A missing/invalid timestamp is not enough evidence to reclaim a file.
         if (!Number.isFinite(file.lastModified) || file.lastModified <= 0 || file.lastModified > cutoff) continue;
         await root.removeEntry(name).catch(() => undefined);
       } catch {
-        // An active/locked file or an implementation without getFile() remains untouched.
+        // 活跃/锁定的文件或无 getFile() 的实现保持原样 / Active/locked files or implementations without getFile() stay untouched.
       }
     }
   } catch {
-    // Directory iteration is optional on some implementations.
+    // 部分实现不支持目录遍历 / Directory iteration is optional on some implementations.
   }
 }
 
@@ -185,7 +185,7 @@ async function ensureOpfsCapacity(requiredBytes: number): Promise<void> {
   if (!estimate?.quota) return;
   const usage = estimate.usage ?? 0;
   const available = Math.max(0, estimate.quota - usage);
-  // 给元数据、浏览器内部开销和下载导出过程留出余量。
+  // 给元数据、浏览器内部开销和下载导出过程留出余量。 / Headroom for metadata, browser internals and the download/export path.
   const requiredWithHeadroom = Math.ceil(requiredBytes * 1.08 + 16 * 1024 * 1024);
   if (available < requiredWithHeadroom) {
     throw new Error(`浏览器临时存储空间不足：至少还需要约 ${Math.ceil(requiredWithHeadroom / 1024 / 1024)} MiB 可用空间。`);
@@ -197,7 +197,7 @@ async function openOpfsDestination(suggestedName: string, expectedBytes: number)
     throw new Error('当前浏览器既不支持系统文件保存，也不支持大文件临时存储。');
   }
   const root = await navigator.storage.getDirectory();
-  // 只回收至少一天未被修改的文件；新任务不会碰到其他标签页的活跃临时文件。
+  // 只回收至少一天未修改的文件，不碰其他标签页的活跃临时文件 / Reclaim only files untouched for a day; never touch active temps.
   await cleanupExpiredOpfsTemps(root);
   await ensureOpfsCapacity(expectedBytes);
   const tempName = createOpfsTempName();
@@ -207,7 +207,7 @@ async function openOpfsDestination(suggestedName: string, expectedBytes: number)
     handle = await root.getFileHandle(tempName, { create: true });
     writable = await handle.createWritable();
   } catch (error) {
-    // The file may already exist even when opening its writer fails.
+    // 打开 writer 失败时文件可能已存在 / The file may already exist even when opening its writer fails.
     await root.removeEntry(tempName).catch(() => undefined);
     throw error;
   }
@@ -232,6 +232,7 @@ async function openOpfsDestination(suggestedName: string, expectedBytes: number)
     finalize: async () => {
       const file = await handle.getFile();
       // File 对象仍由 OPFS 后端支持，不会把整个多 GB 文件一次性复制到 JS 堆中。
+      // The File stays backed by OPFS; multi-GB content is never copied into the JS heap at once.
       return new File([file], suggestedName, { type: file.type || 'application/octet-stream', lastModified: Date.now() });
     },
     cleanup,

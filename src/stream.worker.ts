@@ -293,15 +293,15 @@ async function cleanupExpiredOpfsTemps(root: FileSystemDirectoryHandle): Promise
       if (!name.startsWith(OPFS_TEMP_PREFIX) || !name.endsWith(OPFS_TEMP_SUFFIX) || entry.kind !== 'file') continue;
       try {
         const file = await (entry as FileSystemFileHandle).getFile();
-        // A missing/invalid timestamp is not enough evidence to reclaim a file.
+        // 缺失/无效的时间戳不足以证明文件可回收 / A missing/invalid timestamp is not enough evidence to reclaim a file.
         if (!Number.isFinite(file.lastModified) || file.lastModified <= 0 || file.lastModified > cutoff) continue;
         await root.removeEntry(name).catch(() => undefined);
       } catch {
-        // An active/locked file or an implementation without getFile() remains untouched.
+        // 活跃/锁定的文件或无 getFile() 的实现保持原样 / Active/locked files or implementations without getFile() stay untouched.
       }
     }
   } catch {
-    // Directory iteration is optional on some implementations.
+    // 部分实现不支持目录遍历 / Directory iteration is optional on some implementations.
   }
 }
 
@@ -322,7 +322,7 @@ async function openWriter(suggestedName: string, expectedBytes: number): Promise
   tempName: string;
 }> {
   const root = await navigator.storage.getDirectory();
-  // Reclaim only files untouched for at least a day, then measure the space that remains.
+  // 只回收至少一天未修改的文件，随后测量剩余空间 / Reclaim only files untouched for a day, then measure the space that remains.
   await cleanupExpiredOpfsTemps(root);
   await ensureCapacity(expectedBytes);
   const tempName = createOpfsTempName();
@@ -359,17 +359,18 @@ async function openWriter(suggestedName: string, expectedBytes: number): Promise
           },
           abort: async () => {
             if (!closed) {
-              try { access.close(); } catch { /* already closed */ }
+              try { access.close(); } catch { /* 已关闭 / already closed */ }
             }
             await root.removeEntry(tempName).catch(() => undefined);
           },
         },
       };
     } catch {
-      // Some mobile implementations expose createSyncAccessHandle() before the
-      // first OPFS lock is actually obtainable. Falling back here is safe: no
-      // payload bytes have been written yet, and createWritable() preserves the
-      // same CRYPTA V2 format while avoiding a first-run hard failure.
+      // 部分移动端实现先暴露 createSyncAccessHandle()，实际却拿不到首个 OPFS 锁；此时回退安全：
+      // 尚未写入载荷字节，createWritable() 仍产出相同 CRYPTA V2 格式，只是避免首次运行硬失败。
+      // Some mobile implementations expose createSyncAccessHandle() before the first OPFS lock
+      // is obtainable. Falling back is safe: no payload written yet, and createWritable()
+      // preserves the same CRYPTA V2 format while avoiding a first-run hard failure.
     }
   }
 
@@ -377,7 +378,7 @@ async function openWriter(suggestedName: string, expectedBytes: number): Promise
   try {
     writable = await handle.createWritable();
   } catch (error) {
-    // The file may already exist even when opening its writer fails.
+    // 打开 writer 失败时文件可能已存在 / The file may already exist even when opening its writer fails.
     await root.removeEntry(tempName).catch(() => undefined);
     throw error;
   }

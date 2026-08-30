@@ -1,6 +1,8 @@
 /**
  * 加密私聊协议层 v3（BLAKE3）端到端测试。
+ * End-to-end tests for the encrypted chat protocol layer v3 (BLAKE3).
  * 运行：node chat-protocol.test.ts（Node ≥ 23.6 原生 type-stripping）
+ * Run: node chat-protocol.test.ts (Node >= 23.6 native type-stripping)
  */
 import assert from 'node:assert/strict';
 import {
@@ -45,7 +47,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       assert.equal(await verifyHelloMac(bob, alice.publicKey, mac), true);
       const evil = (await createSession(roomCodeOf(alice))).publicKey;
       assert.equal(await verifyHelloMac(bob, evil, mac), false, '被替换的公钥必须校验失败');
-      const stranger = await createSession(); // 不同 PSK
+      const stranger = await createSession(); // 不同 PSK / different PSK
       assert.equal(await verifyHelloMac(stranger, alice.publicKey, mac), false, '不同 PSK 必须校验失败');
       assert.ok(mac !== null && mac.length <= 86, `MAC 长度 ${mac?.length} 须在中继白名单内`);
     },
@@ -135,13 +137,13 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const f0 = await sealFrame(alice, { k: 'text', t: '1' });
       const f1 = await sealFrame(alice, { k: 'text', t: '2' });
       const f2 = await sealFrame(alice, { k: 'text', t: '3' });
-      // f0 在传输中丢失，先收到 f1：应跳过缺口正常解出
+      // f0 在传输中丢失，先收到 f1：应跳过缺口正常解出 / f0 lost in transit; f1 arrives first — skip the gap and still decrypt
       const skipped = await openFrame(bob, f1.frame);
       assert.equal(skipped.gap, 1, '须报告跳过 1 帧');
       assert.deepEqual(skipped.payload, { k: 'text', t: '2' });
-      // 补发的 f0（回退）按重放拒绝
+      // 补发的 f0（回退）按重放拒绝 / The late f0 (rewind) is rejected as a replay
       await assert.rejects(() => openFrame(bob, f0.frame), /重放/u, '回退帧必须被拒');
-      // f2 继续正常接收
+      // f2 继续正常接收 / f2 continues normal reception
       const next = await openFrame(bob, f2.frame);
       assert.equal(next.gap, 0);
       assert.deepEqual(next.payload, { k: 'text', t: '3' });
@@ -153,7 +155,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const { alice, bob } = await handshake(roomCodeOf(await createSession()));
       await sealFrame(alice, { k: 'text', t: '丢失' });
       const f1 = await sealFrame(alice, { k: 'text', t: '送达' });
-      await openFrame(bob, f1.frame); // 跳过 seq 0
+      await openFrame(bob, f1.frame); // 跳过 seq 0 / skips seq 0
       assert.equal(bob.rx!.nextSeq, 2, 'nextSeq 已对齐到 2');
       assert.equal(bob.rx!.acked, 0, 'acked 不得推进（seq 0 从未按序收到）');
       const f2 = await sealFrame(alice, { k: 'text', t: '再送达' });
@@ -167,11 +169,11 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const room = roomCodeOf(await createSession());
       const { alice, bob } = await handshake(room);
       const oldSeed = alice.safetyBadgeSeed;
-      // bob 页面重载：全新密钥对
+      // bob 页面重载：全新密钥对 / bob's page reloaded: a fresh key pair
       const bobNew = await createSession(room);
       assert.equal(await verifyHelloMac(alice, bobNew.publicKey, await helloMac(bobNew)), true, '新公钥 MAC 须通过');
       await establishSession(bobNew, alice.publicKey);
-      await establishSession(alice, bobNew.publicKey); // alice 凭新 hello 重协商
+      await establishSession(alice, bobNew.publicKey); // alice 凭新 hello 重协商 / alice renegotiates from the new hello
       assert.notEqual(alice.safetyBadgeSeed, oldSeed, '视觉安全徽章种子应随新会话更新');
       assert.equal(alice.safetyBadgeSeed, bobNew.safetyBadgeSeed, '重协商后双方视觉安全徽章种子一致');
       assert.equal(alice.rx!.nextSeq, 0, '接收链序号重置');
@@ -217,7 +219,7 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       assert.equal(bob.rx!.nextSeq, 0, '超大序号不得推进 nextSeq');
       assert.equal(bob.rx!.acked, 0, '超大序号不得推进 acked');
       assert.deepEqual(bob.rx!.chain, beforeChain, '超大序号不得派生或提交棘轮');
-      // 保证拒绝后仍可正常接收一条合法帧。
+      // 保证拒绝后仍可正常接收一条合法帧。 / Ensure a valid frame still decrypts after the rejection.
       assert.deepEqual((await openFrame(bob, (await sealFrame(alice, { k: 'text', t: 'after reject' })).frame)).payload, {
         k: 'text',
         t: 'after reject',

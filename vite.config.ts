@@ -3,7 +3,8 @@ import react from '@vitejs/plugin-react';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 
-/** 加密聊天模块的构建指纹：源码任何改动都会改变此值（防代码投毒的审计锚点） */
+/** 加密聊天模块的构建指纹：源码任何改动都会改变此值（防代码投毒的审计锚点）
+ *  Chat module build fingerprint: changes on any source edit (audit anchor against code poisoning) */
 function chatFingerprint(): string {
   const files = [
     'src/chat.ts',
@@ -28,7 +29,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // 开发环境：评论/聊天 API 与 WS 中继走本地服务
+      // 开发环境：评论/聊天 API 与 WS 中继走本地服务 / Dev: comment/chat API and WS relay via local server
       '/api': {
         target: 'http://127.0.0.1:8787',
         ws: true,

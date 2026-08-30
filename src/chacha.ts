@@ -25,8 +25,9 @@ async function loadSodium(): Promise<Sodium | null> {
 }
 
 /**
- * Prefer libsodium's WebAssembly IETF ChaCha20-Poly1305 implementation.
- * Noble stays as a small, audited fallback for environments where WASM cannot initialize.
+ * 优先使用 libsodium 的 WASM IETF ChaCha20-Poly1305 实现；WASM 无法初始化时回退到小型、经审计的 noble JS 实现。
+ * Prefer libsodium's WebAssembly IETF ChaCha20-Poly1305 implementation. Noble stays as a small,
+ * audited fallback for environments where WASM cannot initialize.
  */
 export async function createChaChaCipher(key: Uint8Array): Promise<ChaChaCipher> {
   if (key.byteLength !== 32) throw new Error('ChaCha20-Poly1305 需要 256 位密钥。');

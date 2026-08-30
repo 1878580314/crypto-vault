@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   ArrowRight,
   Binary,
   Check,
@@ -13,6 +14,7 @@ import {
   FileText,
   FileUp,
   Fingerprint,
+  GitFork,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -59,13 +61,17 @@ import {
   type StreamProgress,
 } from './stream';
 
-// 懒加载加密私聊：连带 libsodium WASM、msgpack 与表情面板一起移出首屏，
-// 移动端首包显著瘦身；点击「加密私聊」或携带 #chat 链接进入时才拉取。
+// 懒加载加密私聊：连带 libsodium WASM、msgpack 与表情面板一起移出首屏，移动端首包显著瘦身；
+// 点击「加密私聊」或携带 #chat 链接进入时才拉取。
+// Lazy-load the encrypted chat: moves libsodium WASM, msgpack and the emoji panel out of the
+// first screen (slimmer mobile payload); fetched only on click or via a #chat link.
 const loadChat = () => import('./Chat');
 const Chat = lazy(loadChat);
 
 // 非首屏工具按需加载。完整性模块包含八种哈希实现；从默认加密页拆出后，
 // 访问者只下载当前真正使用的能力。
+// Non-first-screen tools load on demand. The integrity module bundles eight hash
+// implementations; splitting it out means visitors download only what they use.
 const loadIntegrityChecker = () => import('./IntegrityChecker');
 const IntegrityChecker = lazy(loadIntegrityChecker);
 
@@ -134,7 +140,7 @@ async function copyText(value: string, label: string) {
   }
 }
 
-/** 解析 #chat / #chat=<房间码[.预共享密钥]> */
+/** 解析 #chat / #chat=<房间码[.预共享密钥]> / Parse #chat / #chat=<room[.psk]> */
 function parseChatHash(): { chat: boolean; room?: string } {
   const hash = window.location.hash;
   if (hash === '#chat') return { chat: true };
@@ -214,7 +220,7 @@ export default function App() {
     try {
       localStorage.setItem('crypto-toolkit-theme', theme);
     } catch {
-      // Persistent storage may be unavailable in strict privacy modes.
+      // 严格隐私模式下持久化存储可能不可用 / Persistent storage may be unavailable in strict privacy modes.
     }
     document.querySelector('meta[name="theme-color"]')?.setAttribute(
       'content',
@@ -538,6 +544,8 @@ export default function App() {
     try {
       // 上一次 OPFS 导出由当前页面持有；开始新任务前先确定完成回收，
       // 避免配额估算与异步删除产生竞争。
+      // The previous OPFS export is held by this page; finish its cleanup before a new task
+      // so quota estimation never races with async deletion.
       const cleanup = resultCleanupRef.current;
       resultCleanupRef.current = undefined;
       if (cleanup) await cleanup();
@@ -617,6 +625,26 @@ export default function App() {
             <button type="button" className={tool === 'integrity' ? 'active' : ''} onClick={() => changeTool('integrity')} onPointerEnter={() => void loadIntegrityChecker()} onFocus={() => void loadIntegrityChecker()}><FileCheck2 size={14} /> 完整性校验</button>
             <button type="button" className={tool === 'chat' ? 'active' : ''} onClick={() => changeTool('chat')} onPointerEnter={warmChat} onFocus={warmChat}><MessageSquareLock size={14} /> 加密私聊</button>
           </nav>
+          <a
+            className="repo-link blog-link"
+            href="https://www.minayuki.co/"
+            aria-label="返回 Minayuki 博客"
+            title="返回博客"
+          >
+            <ArrowLeft size={16} />
+            <span>返回博客</span>
+          </a>
+          <a
+            className="repo-link"
+            href="https://github.com/1878580314/crypto-vault"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="在 GitHub 查看 Crypto Vault 开源仓库"
+            title="GitHub 开源仓库"
+          >
+            <GitFork size={16} />
+            <span>开源仓库</span>
+          </a>
           <button
             type="button"
             className="theme-toggle"
