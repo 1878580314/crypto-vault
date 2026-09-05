@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { keyToBase64Url, parseKey } from './crypto';
+import { bytesToBase64Url, parseKey } from './crypto';
 import {
   generateRecipientIdentity,
   inspectRecipientPublicKey,
@@ -160,7 +160,7 @@ export default function KeyExchange({
       const result = await openSealedRawKey(incomingPackage, identityMaterial, incomingIdentityPassphrase);
       rawKey = result.rawKey;
       setOpenedFingerprint(result.recipientFingerprint);
-      onUseRecoveredKey(keyToBase64Url(rawKey));
+      onUseRecoveredKey(bytesToBase64Url(rawKey));
       toast.success('密钥包已打开，解密密钥已载入');
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '无法打开密钥包。');

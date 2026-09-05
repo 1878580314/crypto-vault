@@ -23,18 +23,11 @@
  * - 临时性：密钥材料仅存内存，destroySession 逐字节清零。
  *   Ephemeral: key material lives in memory only and is byte-wise zeroed by destroySession.
  */
-import _sodium from 'libsodium-wrappers';
 import { blake3 } from '@noble/hashes/blake3.js';
+import { bytesToHex } from '@noble/hashes/utils.js';
 import { decode, encode } from '@msgpack/msgpack';
-
-type Sodium = typeof _sodium;
-
-let sodiumReady: Promise<Sodium> | undefined;
-
-function sodium(): Promise<Sodium> {
-  sodiumReady ??= _sodium.ready.then(() => _sodium);
-  return sodiumReady;
-}
+import { base64UrlToBytes, bytesToBase64Url } from './crypto.ts';
+import { loadSodium } from './sodium.ts';
 
 const ROOM_BYTES = 16;
 const PSK_BYTES = 32;
@@ -101,8 +94,10 @@ export interface ChatSession {
   rx: Ratchet | null;
 }
 
-const b64 = (bytes: Uint8Array) => _sodium.to_base64(bytes, _sodium.base64_variants.URLSAFE_NO_PADDING);
-const unb64 = (text: string) => _sodium.from_base64(text, _sodium.base64_variants.URLSAFE_NO_PADDING);
+/** 房间码 / 公钥统一使用 crypto.ts 的 Base64URL 实现（与 sodium URLSAFE_NO_PADDING 输出逐字节一致）
+ *  Room codes / public keys share crypto.ts's Base64URL helpers (byte-identical to sodium URLSAFE_NO_PADDING) */
+const b64 = (bytes: Uint8Array) => bytesToBase64Url(bytes);
+const unb64 = (text: string) => base64UrlToBytes(text);
 
 /** 解析房间码：<room> 或 <room>.<psk> / Parse a room code: <room> or <room>.<psk> */
 export function parseRoomCode(code: string): { room: string; psk: Uint8Array | null } {
@@ -116,7 +111,7 @@ export function roomCodeOf(session: { roomId: string; psk: Uint8Array | null }):
 }
 
 export async function createSession(roomCode?: string): Promise<ChatSession> {
-  const s = await sodium();
+  const s = await loadSodium();
   const parsed = roomCode ? parseRoomCode(roomCode) : { room: null, psk: null as Uint8Array | null };
   if (parsed.psk && parsed.psk.length !== PSK_BYTES) throw new Error('预共享密钥长度无效');
   const room = parsed.room ?? b64(s.randombytes_buf(ROOM_BYTES));
@@ -138,7 +133,7 @@ export async function createSession(roomCode?: string): Promise<ChatSession> {
 
 /** 显式创建降级会话（无 PSK，仅 ECDH）——UI 须显著警告 / Explicitly create a degraded session (no PSK, ECDH only); the UI must warn prominently */
 export async function createInsecureSession(roomId: string): Promise<ChatSession> {
-  const s = await sodium();
+  const s = await loadSodium();
   const pair = s.crypto_box_keypair();
   return {
     roomId,
@@ -166,7 +161,6 @@ export function peerPublicKeyFromText(text: string): Uint8Array {
  *  Hello-frame public-key MAC (PSK mode only): BLAKE3 keyed mode with the PSK as the MAC key */
 export async function helloMac(session: ChatSession): Promise<string | null> {
   if (!session.psk) return null;
-  await sodium();
   return b64(blake3(session.publicKey, { key: session.psk, dkLen: MAC_BYTES }));
 }
 
@@ -174,14 +168,13 @@ export async function helloMac(session: ChatSession): Promise<string | null> {
 export async function verifyHelloMac(session: ChatSession, peerPublicKey: Uint8Array, mac: string | null): Promise<boolean> {
   if (!session.psk) return mac === null || mac === undefined ? true : false;
   if (typeof mac !== 'string') return false;
-  await sodium();
   const expected = b64(blake3(peerPublicKey, { key: session.psk, dkLen: MAC_BYTES }));
   return expected === mac;
 }
 
 /** 收到对方公钥（已通过 MAC 认证）后建立会话 / Establish the session once the peer key is MAC-authenticated */
 export async function establishSession(session: ChatSession, peerPublicKey: Uint8Array): Promise<void> {
-  const s = await sodium();
+  const s = await loadSodium();
   // 公钥字典序决定双方向链的归属：小者发送用链 1，大者发送用链 2；
   // 先拒绝自协商，避免为失败路径派生并暂存 master。
   // Lexicographic key order assigns chain directions: the smaller key sends on chain 1,
@@ -211,7 +204,7 @@ export async function establishSession(session: ChatSession, peerPublicKey: Uint
   const safetyBadgeBytes = kdf('crypta-chat:v3:safety-badge', master, KEY_BYTES);
   let safetyBadgeSeed: string;
   try {
-    safetyBadgeSeed = s.to_hex(safetyBadgeBytes).toLowerCase();
+    safetyBadgeSeed = bytesToHex(safetyBadgeBytes);
   } finally {
     safetyBadgeBytes.fill(0);
   }
@@ -346,7 +339,7 @@ export async function sealFrame(
   session: ChatSession,
   payload: WirePayload
 ): Promise<{ frame: Uint8Array; seq: number }> {
-  const s = await sodium();
+  const s = await loadSodium();
   if (!session.tx || !session.sessionKey) throw new Error('会话密钥尚未建立');
 
   const seq = session.tx.nextSeq;
@@ -391,7 +384,7 @@ export async function openFrame(
   session: ChatSession,
   frame: Uint8Array,
 ): Promise<{ payload: WirePayload; gap: number }> {
-  const s = await sodium();
+  const s = await loadSodium();
   const rx = session.rx;
   if (!rx || !session.sessionKey) throw new Error('会话密钥尚未建立');
   if (frame.byteLength < SEQ_BYTES + NONCE_BYTES + 16) throw new Error('帧长度无效');

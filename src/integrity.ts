@@ -1,14 +1,3 @@
-import { blake2b } from '@noble/hashes/blake2.js';
-import { blake3 } from '@noble/hashes/blake3.js';
-import { md5, sha1 } from '@noble/hashes/legacy.js';
-import { sha256, sha512 } from '@noble/hashes/sha2.js';
-import { sha3_256, sha3_512 } from '@noble/hashes/sha3.js';
-
-export type StreamingHasher = {
-  update(data: Uint8Array): unknown;
-  digest(): Uint8Array;
-};
-
 export type AlgorithmId =
   | 'MD5'
   | 'SHA-1'
@@ -24,18 +13,17 @@ export type AlgorithmSpec = {
   bits: number;
   hexLength: number;
   note: string;
-  create: () => StreamingHasher;
 };
 
 export const ALGORITHM_SPECS: readonly AlgorithmSpec[] = [
-  { id: 'MD5', bits: 128, hexLength: 32, note: '仅用于兼容旧清单，不具抗碰撞安全性', create: () => md5.create() },
-  { id: 'SHA-1', bits: 160, hexLength: 40, note: 'Git 等旧系统常用，不建议用于安全校验', create: () => sha1.create() },
-  { id: 'SHA-256', bits: 256, hexLength: 64, note: '应用最广的安全哈希标准', create: () => sha256.create() },
-  { id: 'SHA-512', bits: 512, hexLength: 128, note: '高强度哈希，64 位平台上吞吐很高', create: () => sha512.create() },
-  { id: 'SHA3-256', bits: 256, hexLength: 64, note: 'NIST 最新一代哈希标准', create: () => sha3_256.create() },
-  { id: 'SHA3-512', bits: 512, hexLength: 128, note: 'NIST 最新一代哈希标准', create: () => sha3_512.create() },
-  { id: 'BLAKE2b-512', bits: 512, hexLength: 128, note: '高速安全哈希，兼容 b2sum 等旧清单', create: () => blake2b.create({ dkLen: 64 }) },
-  { id: 'BLAKE3', bits: 256, hexLength: 64, note: '当前最快的安全哈希，本工具默认算法', create: () => blake3.create({ dkLen: 32 }) },
+  { id: 'MD5', bits: 128, hexLength: 32, note: '仅用于兼容旧清单，不具抗碰撞安全性' },
+  { id: 'SHA-1', bits: 160, hexLength: 40, note: 'Git 等旧系统常用，不建议用于安全校验' },
+  { id: 'SHA-256', bits: 256, hexLength: 64, note: '应用最广的安全哈希标准' },
+  { id: 'SHA-512', bits: 512, hexLength: 128, note: '高强度哈希，64 位平台上吞吐很高' },
+  { id: 'SHA3-256', bits: 256, hexLength: 64, note: 'NIST 最新一代哈希标准' },
+  { id: 'SHA3-512', bits: 512, hexLength: 128, note: 'NIST 最新一代哈希标准' },
+  { id: 'BLAKE2b-512', bits: 512, hexLength: 128, note: '高速安全哈希，兼容 b2sum 等旧清单' },
+  { id: 'BLAKE3', bits: 256, hexLength: 64, note: '当前最快的安全哈希，本工具默认算法' },
 ];
 
 export const DEFAULT_ALGORITHMS: readonly AlgorithmId[] = ['BLAKE3'];

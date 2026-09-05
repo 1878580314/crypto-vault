@@ -39,7 +39,7 @@ import {
   generateKey,
   inspectPayloadHeader,
   keyFingerprint,
-  keyToBase64Url,
+  bytesToBase64Url,
   packageBytesToText,
   parseKey,
   textToPackageBytes,
@@ -161,7 +161,7 @@ export default function App() {
   const [mode, setMode] = useState<InputMode>('text');
   const [algorithm, setAlgorithm] = useState<AlgorithmId>('AES-256-GCM');
   const [keyMode, setKeyMode] = useState<KeyMode>('raw');
-  const [keyValue, setKeyValue] = useState(() => keyToBase64Url(generateKey()));
+  const [keyValue, setKeyValue] = useState(() => bytesToBase64Url(generateKey()));
   const [passphrase, setPassphrase] = useState('');
   const [passphraseConfirm, setPassphraseConfirm] = useState('');
   const [showKey, setShowKey] = useState(false);
@@ -311,7 +311,7 @@ export default function App() {
   };
 
   const regenerateKey = () => {
-    setKeyValue(keyToBase64Url(generateKey()));
+    setKeyValue(bytesToBase64Url(generateKey()));
     setShowKey(false);
     resetResult();
     toast.success('已生成新的 256 位随机密钥');

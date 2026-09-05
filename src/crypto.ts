@@ -1,7 +1,7 @@
 import { decode, encode } from '@msgpack/msgpack';
 import { argon2idAsync } from '@noble/hashes/argon2.js';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import { createChaChaCipher } from './chacha';
+import { createChaChaCipher } from './chacha.ts';
 
 export type AlgorithmId = 'AES-256-GCM' | 'CHACHA20-POLY1305';
 export type ContentKind = 'text' | 'file';
@@ -66,7 +66,7 @@ export const ARGON2_SALT_BYTES = 16;
 
 const encoder = new TextEncoder();
 
-function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+export function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   if (
     bytes.buffer instanceof ArrayBuffer &&
     bytes.byteOffset === 0 &&
@@ -268,12 +268,6 @@ export async function derivePassphraseKey(
     asyncTick: 8,
     onProgress,
   });
-}
-
-export function keyToBase64Url(key: Uint8Array): string {
-  let binary = '';
-  for (const byte of key) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/u, '');
 }
 
 export function bytesToBase64Url(data: Uint8Array): string {

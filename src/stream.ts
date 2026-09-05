@@ -1,57 +1,40 @@
-import { decode, encode } from '@msgpack/msgpack';
-import { hkdf } from '@noble/hashes/hkdf.js';
-import { sha256 } from '@noble/hashes/sha2.js';
-import { createChaChaCipher } from './chacha';
 import {
-  NONCE_BYTES,
-  createPassphraseKdf,
-  derivePassphraseKey,
-  parseKeyDerivationInfo,
+  MAX_META_BYTES,
+  STREAM_CHUNK_BYTES,
+  StreamUserCancelledError,
+  TAG_BYTES,
+  createCipher,
+  createFileSalt,
+  createOpfsTempName,
+  createProgressReporter,
+  decodeStreamMetaBytes,
+  deriveFileKey,
+  encodeStreamHeader,
+  encodeStreamMetaBytes,
+  parseStreamMeta,
+  prepareOpfsTempDirectory,
+  readStreamPrefix,
+  readU32,
+  recordAad,
+  recordNonce,
+  resolveDecryptionKey,
+  resolveEncryptionKey,
+  runBoundedPipeline,
+  u32,
+  zeroMetrics,
   type AlgorithmId,
   type KeyDerivationInfo,
-  type PayloadMeta,
-} from './crypto';
+  type StreamHeader,
+  type StreamMeta,
+  type StreamProgress,
+} from './streamCore.ts';
+import { bytesToArrayBuffer, type PayloadMeta } from './crypto.ts';
 
-export const STREAM_CHUNK_BYTES = 16 * 1024 * 1024;
+// App.tsx 直接从本模块导入以下符号，保持导出面不变。
+// Re-exported so App.tsx keeps importing everything from './stream'.
+export { STREAM_CHUNK_BYTES, StreamUserCancelledError, type StreamProgress };
+
 export const STREAM_THRESHOLD_BYTES = 64 * 1024 * 1024;
-const TAG_BYTES = 16;
-const STREAM_MAGIC = new TextEncoder().encode('CRYPTA2S');
-const MAX_HEADER_BYTES = 64 * 1024;
-const MAX_META_BYTES = 1024 * 1024;
-const FILE_SALT_BYTES = 16;
-const STREAM_KEY_INFO = new TextEncoder().encode('CRYPTA-V2-STREAM-AEAD-KEY');
-const OPFS_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const OPFS_TEMP_PREFIX = 'crypta-';
-const OPFS_TEMP_SUFFIX = '.tmp';
-
-interface StreamHeader {
-  version: 2;
-  algorithm: AlgorithmId;
-  chunkSize: number;
-  fileSalt: Uint8Array;
-  keyDerivation: KeyDerivationInfo;
-}
-
-interface StreamMeta {
-  kind: 'file';
-  name: string;
-  mime: string;
-  size: number;
-  createdAt: string;
-  chunks: number;
-}
-
-export interface StreamProgress {
-  processed: number;
-  total: number;
-  ratio: number;
-  bytesPerSecond: number;
-  phase: 'kdf' | 'data';
-  readBytesPerSecond?: number;
-  cryptoBytesPerSecond?: number;
-  writeBytesPerSecond?: number;
-  concurrency?: number;
-}
 
 export interface StreamEncryptOptions {
   algorithm: AlgorithmId;
@@ -74,13 +57,6 @@ export interface StreamDecryptOptions {
   passphrase?: string;
   onProgress?: (progress: StreamProgress) => void;
   shouldCancel?: () => boolean;
-}
-
-export class StreamUserCancelledError extends Error {
-  constructor() {
-    super('操作已由用户停止。');
-    this.name = 'StreamUserCancelledError';
-  }
 }
 
 export class SavePickerCancelledError extends Error {
@@ -151,55 +127,8 @@ function streamConcurrency(algorithm: AlgorithmId): number {
   return cores >= 4 ? 2 : 1;
 }
 
-function createOpfsTempName(): string {
-  const taskId = crypto.randomUUID?.() ?? Array.from(
-    crypto.getRandomValues(new Uint8Array(8)),
-    (value) => value.toString(16).padStart(2, '0'),
-  ).join('');
-  return `${OPFS_TEMP_PREFIX}${Date.now().toString(36)}-${taskId}${OPFS_TEMP_SUFFIX}`;
-}
-
-async function cleanupExpiredOpfsTemps(root: FileSystemDirectoryHandle): Promise<void> {
-  const cutoff = Date.now() - OPFS_TEMP_MAX_AGE_MS;
-  try {
-    const entries = root.entries?.();
-    if (!entries) return;
-    for await (const [name, entry] of entries) {
-      if (!name.startsWith(OPFS_TEMP_PREFIX) || !name.endsWith(OPFS_TEMP_SUFFIX) || entry.kind !== 'file') continue;
-      try {
-        const file = await (entry as FileSystemFileHandle).getFile();
-        // 缺失/无效的时间戳不足以证明文件可回收 / A missing/invalid timestamp is not enough evidence to reclaim a file.
-        if (!Number.isFinite(file.lastModified) || file.lastModified <= 0 || file.lastModified > cutoff) continue;
-        await root.removeEntry(name).catch(() => undefined);
-      } catch {
-        // 活跃/锁定的文件或无 getFile() 的实现保持原样 / Active/locked files or implementations without getFile() stay untouched.
-      }
-    }
-  } catch {
-    // 部分实现不支持目录遍历 / Directory iteration is optional on some implementations.
-  }
-}
-
-async function ensureOpfsCapacity(requiredBytes: number): Promise<void> {
-  const estimate = await navigator.storage?.estimate?.();
-  if (!estimate?.quota) return;
-  const usage = estimate.usage ?? 0;
-  const available = Math.max(0, estimate.quota - usage);
-  // 给元数据、浏览器内部开销和下载导出过程留出余量。 / Headroom for metadata, browser internals and the download/export path.
-  const requiredWithHeadroom = Math.ceil(requiredBytes * 1.08 + 16 * 1024 * 1024);
-  if (available < requiredWithHeadroom) {
-    throw new Error(`浏览器临时存储空间不足：至少还需要约 ${Math.ceil(requiredWithHeadroom / 1024 / 1024)} MiB 可用空间。`);
-  }
-}
-
 async function openOpfsDestination(suggestedName: string, expectedBytes: number): Promise<StreamDestination> {
-  if (typeof navigator.storage?.getDirectory !== 'function') {
-    throw new Error('当前浏览器既不支持系统文件保存，也不支持大文件临时存储。');
-  }
-  const root = await navigator.storage.getDirectory();
-  // 只回收至少一天未修改的文件，不碰其他标签页的活跃临时文件 / Reclaim only files untouched for a day; never touch active temps.
-  await cleanupExpiredOpfsTemps(root);
-  await ensureOpfsCapacity(expectedBytes);
+  const root = await prepareOpfsTempDirectory(expectedBytes);
   const tempName = createOpfsTempName();
   let handle: FileSystemFileHandle;
   let writable: Awaited<ReturnType<FileSystemFileHandle['createWritable']>>;
@@ -239,155 +168,6 @@ async function openOpfsDestination(suggestedName: string, expectedBytes: number)
   };
 }
 
-function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  if (
-    bytes.buffer instanceof ArrayBuffer &&
-    bytes.byteOffset === 0 &&
-    bytes.byteLength === bytes.buffer.byteLength
-  ) {
-    return bytes.buffer;
-  }
-  return bytes.slice().buffer;
-}
-
-function u32(value: number): Uint8Array {
-  if (!Number.isInteger(value) || value < 0 || value > 0xffff_ffff) throw new Error('CRYPTA 记录长度超出范围。');
-  const output = new Uint8Array(4);
-  new DataView(output.buffer).setUint32(0, value, false);
-  return output;
-}
-
-function readU32(input: Uint8Array, offset = 0): number {
-  if (input.byteLength < offset + 4) throw new Error('CRYPTA 流式容器已截断。');
-  return new DataView(input.buffer, input.byteOffset, input.byteLength).getUint32(offset, false);
-}
-
-function concat(...parts: Uint8Array[]): Uint8Array {
-  const total = parts.reduce((sum, part) => sum + part.byteLength, 0);
-  const output = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    output.set(part, offset);
-    offset += part.byteLength;
-  }
-  return output;
-}
-
-function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
-  if (left.byteLength !== right.byteLength) return false;
-  let diff = 0;
-  for (let index = 0; index < left.byteLength; index += 1) diff |= left[index] ^ right[index];
-  return diff === 0;
-}
-
-function recordNonce(index: number): Uint8Array {
-  if (!Number.isInteger(index) || index < 0 || index > 0xffff_ffff) throw new Error('CRYPTA 分块索引超出范围。');
-  const nonce = new Uint8Array(NONCE_BYTES);
-  new DataView(nonce.buffer).setUint32(8, index, false);
-  return nonce;
-}
-
-function recordAad(prefix: Uint8Array, type: 0 | 1, index: number, plaintextLength: number): Uint8Array {
-  return concat(prefix, Uint8Array.of(type), u32(index), u32(plaintextLength));
-}
-
-function parseStreamHeader(value: unknown): StreamHeader {
-  if (!value || typeof value !== 'object') throw new Error('CRYPTA 流式头部无效。');
-  const header = value as Record<string, unknown>;
-  if (header.version !== 2) throw new Error('不支持该 CRYPTA 流式版本。');
-  if (header.algorithm !== 'AES-256-GCM' && header.algorithm !== 'CHACHA20-POLY1305') {
-    throw new Error('密文使用了不受支持的算法。');
-  }
-  if (
-    typeof header.chunkSize !== 'number' ||
-    !Number.isInteger(header.chunkSize) ||
-    header.chunkSize < 1024 * 1024 ||
-    header.chunkSize > 64 * 1024 * 1024
-  ) {
-    throw new Error('CRYPTA 分块大小无效。');
-  }
-  if (!(header.fileSalt instanceof Uint8Array) || header.fileSalt.byteLength !== FILE_SALT_BYTES) {
-    throw new Error('CRYPTA 文件子密钥盐值无效。');
-  }
-  return {
-    version: 2,
-    algorithm: header.algorithm,
-    chunkSize: header.chunkSize,
-    fileSalt: header.fileSalt,
-    keyDerivation: parseKeyDerivationInfo(header.keyDerivation),
-  };
-}
-
-function deriveFileKey(masterKey: Uint8Array, fileSalt: Uint8Array): Uint8Array {
-  if (masterKey.byteLength !== 32) throw new Error('无效的 256 位主密钥。');
-  if (fileSalt.byteLength !== FILE_SALT_BYTES) throw new Error('无效的文件子密钥盐值。');
-  return hkdf(sha256, masterKey, fileSalt, STREAM_KEY_INFO, 32);
-}
-
-function parseStreamMeta(value: unknown): StreamMeta {
-  if (!value || typeof value !== 'object') throw new Error('解密后的文件元数据无效。');
-  const meta = value as Record<string, unknown>;
-  if (meta.kind !== 'file') throw new Error('该流式密文不包含文件。');
-  if (typeof meta.name !== 'string' || typeof meta.mime !== 'string' || typeof meta.createdAt !== 'string') {
-    throw new Error('解密后的文件元数据无效。');
-  }
-  if (typeof meta.size !== 'number' || !Number.isSafeInteger(meta.size) || meta.size < 0) {
-    throw new Error('解密后的文件长度无效。');
-  }
-  if (typeof meta.chunks !== 'number' || !Number.isInteger(meta.chunks) || meta.chunks < 0 || meta.chunks > 0xffff_fffe) {
-    throw new Error('解密后的分块计数无效。');
-  }
-  return meta as unknown as StreamMeta;
-}
-
-async function createCipher(algorithm: AlgorithmId, key: Uint8Array) {
-  if (key.byteLength !== 32) throw new Error('无效的 256 位密钥。');
-  if (algorithm === 'AES-256-GCM') {
-    const cryptoKey = await crypto.subtle.importKey(
-      'raw',
-      bytesToArrayBuffer(key),
-      { name: 'AES-GCM', length: 256 },
-      false,
-      ['encrypt', 'decrypt'],
-    );
-    return {
-      encrypt: async (plaintext: Uint8Array, nonce: Uint8Array, aad: Uint8Array) => new Uint8Array(
-        await crypto.subtle.encrypt(
-          {
-            name: 'AES-GCM',
-            iv: bytesToArrayBuffer(nonce),
-            additionalData: bytesToArrayBuffer(aad),
-            tagLength: 128,
-          },
-          cryptoKey,
-          bytesToArrayBuffer(plaintext),
-        ),
-      ),
-      decrypt: async (ciphertext: Uint8Array, nonce: Uint8Array, aad: Uint8Array) => new Uint8Array(
-        await crypto.subtle.decrypt(
-          {
-            name: 'AES-GCM',
-            iv: bytesToArrayBuffer(nonce),
-            additionalData: bytesToArrayBuffer(aad),
-            tagLength: 128,
-          },
-          cryptoKey,
-          bytesToArrayBuffer(ciphertext),
-        ),
-      ),
-    };
-  }
-  const chacha = await createChaChaCipher(key);
-  return {
-    encrypt: async (plaintext: Uint8Array, nonce: Uint8Array, aad: Uint8Array) => chacha.encrypt(plaintext, nonce, aad),
-    decrypt: async (ciphertext: Uint8Array, nonce: Uint8Array, aad: Uint8Array) => chacha.decrypt(ciphertext, nonce, aad),
-  };
-}
-
-function assertNotCancelled(shouldCancel?: () => boolean) {
-  if (shouldCancel?.()) throw new StreamUserCancelledError();
-}
-
 function describeFileSystemError(error: unknown, action: 'read' | 'open' | 'write' | 'close'): Error {
   if (!(error instanceof DOMException)) {
     return error instanceof Error ? error : new Error('文件系统操作失败。');
@@ -411,70 +191,6 @@ function describeFileSystemError(error: unknown, action: 'read' | 'open' | 'writ
     return new Error('文件写入被系统或浏览器中止。请确认目标磁盘空间充足、连接稳定，并尝试更换本地保存目录。');
   }
   return new Error(`文件系统操作失败：${error.message || error.name}`);
-}
-
-interface PipelineMetrics {
-  readBytes: number;
-  readMs: number;
-  cryptoBytes: number;
-  cryptoMs: number;
-  writeBytes: number;
-  writeMs: number;
-  concurrency: number;
-}
-
-function stageRate(bytes: number, milliseconds: number): number {
-  return milliseconds > 0 ? bytes / (milliseconds / 1000) : 0;
-}
-
-function progressReporter(
-  total: number,
-  metrics: PipelineMetrics,
-  callback?: (progress: StreamProgress) => void,
-) {
-  const started = performance.now();
-  return (processed: number) => {
-    if (!callback) return;
-    const seconds = Math.max((performance.now() - started) / 1000, 0.001);
-    callback({
-      processed,
-      total,
-      ratio: total === 0 ? 1 : Math.min(processed / total, 1),
-      bytesPerSecond: processed / seconds,
-      phase: 'data',
-      readBytesPerSecond: stageRate(metrics.readBytes, metrics.readMs),
-      cryptoBytesPerSecond: stageRate(metrics.cryptoBytes, metrics.cryptoMs),
-      writeBytesPerSecond: stageRate(metrics.writeBytes, metrics.writeMs),
-      concurrency: metrics.concurrency,
-    });
-  };
-}
-
-async function resolveEncryptionKey(options: StreamEncryptOptions): Promise<{ key: Uint8Array; kdf: KeyDerivationInfo }> {
-  if (options.keyDerivation?.type === 'argon2id' || options.passphrase !== undefined) {
-    const kdf = options.keyDerivation?.type === 'argon2id' ? options.keyDerivation : createPassphraseKdf();
-    const passphrase = options.passphrase ?? '';
-    const key = await derivePassphraseKey(passphrase, kdf, (ratio) => {
-      options.onProgress?.({ processed: 0, total: 0, ratio, bytesPerSecond: 0, phase: 'kdf' });
-    });
-    return { key, kdf };
-  }
-  if (!options.rawKey) throw new Error('缺少 256 位密钥。');
-  return { key: options.rawKey.slice(), kdf: { type: 'raw' } };
-}
-
-async function resolveDecryptionKey(
-  keyDerivation: KeyDerivationInfo,
-  options: StreamDecryptOptions,
-): Promise<Uint8Array> {
-  if (keyDerivation.type === 'argon2id') {
-    if (options.passphrase === undefined) throw new Error('该密文需要文本口令。');
-    return derivePassphraseKey(options.passphrase, keyDerivation, (ratio) => {
-      options.onProgress?.({ processed: 0, total: 0, ratio, bytesPerSecond: 0, phase: 'kdf' });
-    });
-  }
-  if (!options.rawKey) throw new Error('该密文需要 256 位原始密钥。');
-  return options.rawKey.slice();
 }
 
 async function openDestination(suggestedName: string, encrypted: boolean, expectedBytes: number): Promise<StreamDestination> {
@@ -523,6 +239,7 @@ function runOptimizedOpfsWorker(
     algorithm?: AlgorithmId;
     rawKey?: Uint8Array;
     passphrase?: string;
+    keyDerivation?: KeyDerivationInfo;
     suggestedName: string;
     expectedBytes: number;
   },
@@ -624,6 +341,10 @@ function runOptimizedOpfsWorker(
   return runAttempt(0);
 }
 
+function assertNotCancelled(shouldCancel?: () => boolean) {
+  if (shouldCancel?.()) throw new StreamUserCancelledError();
+}
+
 export async function encryptFileStreaming(file: File, options: StreamEncryptOptions): Promise<StreamFileResult> {
   const expectedBytes = file.size + Math.ceil(file.size / STREAM_CHUNK_BYTES) * (TAG_BYTES + 4) + 1024 * 1024;
   if (supportsOptimizedOpfsWorker()) {
@@ -633,6 +354,7 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
       algorithm: options.algorithm,
       rawKey: options.rawKey,
       passphrase: options.passphrase,
+      keyDerivation: options.keyDerivation,
       suggestedName: `${file.name}.crypta`,
       expectedBytes,
     }, options);
@@ -643,12 +365,12 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
   let fileKey: Uint8Array | undefined;
   try {
     assertNotCancelled(options.shouldCancel);
-    const resolved = await resolveEncryptionKey(options);
+    const resolved = await resolveEncryptionKey(options, options.onProgress);
     masterKey = resolved.key;
     const { kdf } = resolved;
     assertNotCancelled(options.shouldCancel);
 
-    const fileSalt = crypto.getRandomValues(new Uint8Array(FILE_SALT_BYTES));
+    const fileSalt = createFileSalt();
     fileKey = deriveFileKey(masterKey, fileSalt);
     const chunks = Math.ceil(file.size / STREAM_CHUNK_BYTES);
     if (chunks > 0xffff_fffe) throw new Error('文件过大，超出当前 CRYPTA 流式格式容量。');
@@ -659,8 +381,7 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
       fileSalt,
       keyDerivation: kdf,
     };
-    const headerBytes = encode(header);
-    const prefix = concat(STREAM_MAGIC, u32(headerBytes.byteLength), headerBytes);
+    const { prefix } = encodeStreamHeader(header);
     const meta: StreamMeta = {
       kind: 'file',
       name: file.name,
@@ -669,7 +390,7 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
       createdAt: new Date().toISOString(),
       chunks,
     };
-    const metaBytes = encode(meta);
+    const metaBytes = encodeStreamMetaBytes(meta);
     const cipher = await createCipher(options.algorithm, fileKey);
     const encryptedMeta = await cipher.encrypt(metaBytes, recordNonce(0), recordAad(prefix, 0, 0, metaBytes.byteLength));
 
@@ -682,16 +403,8 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
     }
 
     const concurrency = streamConcurrency(options.algorithm);
-    const metrics: PipelineMetrics = {
-      readBytes: 0,
-      readMs: 0,
-      cryptoBytes: 0,
-      cryptoMs: 0,
-      writeBytes: 0,
-      writeMs: 0,
-      concurrency,
-    };
-    const report = progressReporter(file.size, metrics, options.onProgress);
+    const metrics = zeroMetrics(concurrency);
+    const report = createProgressReporter(file.size, metrics, options.onProgress);
     let processed = 0;
     type PreparedEncryptedChunk = {
       encrypted: Uint8Array;
@@ -720,30 +433,25 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
       metrics.cryptoMs += performance.now() - cryptoStarted;
       return { encrypted, plaintextLength: plaintext.byteLength };
     };
-
-    const inFlight = new Map<number, Promise<PreparedEncryptedChunk>>();
-    const schedule = (chunk: number) => {
-      if (chunk < chunks) inFlight.set(chunk, prepareChunk(chunk));
-    };
-    for (let chunk = 0; chunk < Math.min(concurrency, chunks); chunk += 1) schedule(chunk);
-
-    for (let chunk = 0; chunk < chunks; chunk += 1) {
-      assertNotCancelled(options.shouldCancel);
-      const prepared = await inFlight.get(chunk)!;
-      inFlight.delete(chunk);
-      schedule(chunk + concurrency);
-      const writeStarted = performance.now();
-      try {
-        await writable.write(u32(prepared.encrypted.byteLength));
-        await writable.write(prepared.encrypted);
-      } catch (error) {
-        throw describeFileSystemError(error, 'write');
-      }
-      metrics.writeBytes += prepared.encrypted.byteLength + 4;
-      metrics.writeMs += performance.now() - writeStarted;
-      processed += prepared.plaintextLength;
-      report(processed);
-    }
+    await runBoundedPipeline(
+      chunks,
+      concurrency,
+      prepareChunk,
+      async (_index, prepared) => {
+        const writeStarted = performance.now();
+        try {
+          await writable.write(u32(prepared.encrypted.byteLength));
+          await writable.write(prepared.encrypted);
+        } catch (error) {
+          throw describeFileSystemError(error, 'write');
+        }
+        metrics.writeBytes += prepared.encrypted.byteLength + 4;
+        metrics.writeMs += performance.now() - writeStarted;
+        processed += prepared.plaintextLength;
+        report(processed);
+      },
+      options.shouldCancel,
+    );
     try {
       await writable.close();
     } catch (error) {
@@ -765,30 +473,6 @@ export async function encryptFileStreaming(file: File, options: StreamEncryptOpt
     fileKey?.fill(0);
     masterKey?.fill(0);
   }
-}
-
-async function readStreamPrefix(file: File): Promise<{
-  header: StreamHeader;
-  prefix: Uint8Array;
-  offset: number;
-}> {
-  if (file.size < STREAM_MAGIC.byteLength + 4) throw new Error('文件不是有效的 CRYPTA 流式密文。');
-  const fixed = new Uint8Array(await file.slice(0, STREAM_MAGIC.byteLength + 4).arrayBuffer());
-  if (!equalBytes(fixed.subarray(0, STREAM_MAGIC.byteLength), STREAM_MAGIC)) {
-    throw new Error('文件不是 CRYPTA V2 流式密文。');
-  }
-  const headerLength = readU32(fixed, STREAM_MAGIC.byteLength);
-  if (headerLength === 0 || headerLength > MAX_HEADER_BYTES) throw new Error('CRYPTA 流式头部长度无效。');
-  const prefixLength = STREAM_MAGIC.byteLength + 4 + headerLength;
-  if (prefixLength > file.size) throw new Error('CRYPTA 流式头部已截断。');
-  const prefix = new Uint8Array(await file.slice(0, prefixLength).arrayBuffer());
-  let decoded: unknown;
-  try {
-    decoded = decode(prefix.subarray(STREAM_MAGIC.byteLength + 4));
-  } catch {
-    throw new Error('无法解析 CRYPTA 流式头部。');
-  }
-  return { header: parseStreamHeader(decoded), prefix, offset: prefixLength };
 }
 
 export async function inspectStreamingFile(file: File): Promise<StreamHeader> {
@@ -814,7 +498,7 @@ export async function decryptFileStreaming(file: File, options: StreamDecryptOpt
   try {
     const { header, prefix, offset: prefixOffset } = await readStreamPrefix(file);
     assertNotCancelled(options.shouldCancel);
-    masterKey = await resolveDecryptionKey(header.keyDerivation, options);
+    masterKey = await resolveDecryptionKey(header.keyDerivation, options, options.onProgress);
     fileKey = deriveFileKey(masterKey, header.fileSalt);
     const cipher = await createCipher(header.algorithm, fileKey);
 
@@ -836,27 +520,13 @@ export async function decryptFileStreaming(file: File, options: StreamDecryptOpt
     } catch {
       throw new Error('解密失败：密钥/口令错误，或密文头部已被修改。');
     }
-    let metaDecoded: unknown;
-    try {
-      metaDecoded = decode(metaBytes);
-    } catch {
-      throw new Error('解密后的文件元数据损坏。');
-    }
-    const meta = parseStreamMeta(metaDecoded);
+    const meta = parseStreamMeta(await decodeStreamMetaBytes(metaBytes));
     const expectedChunks = Math.ceil(meta.size / header.chunkSize);
     if (expectedChunks !== meta.chunks) throw new Error('密文分块计数与文件长度不一致。');
 
     const concurrency = streamConcurrency(header.algorithm);
-    const metrics: PipelineMetrics = {
-      readBytes: 0,
-      readMs: 0,
-      cryptoBytes: 0,
-      cryptoMs: 0,
-      writeBytes: 0,
-      writeMs: 0,
-      concurrency,
-    };
-    const report = progressReporter(meta.size, metrics, options.onProgress);
+    const metrics = zeroMetrics(concurrency);
+    const report = createProgressReporter(meta.size, metrics, options.onProgress);
     let processed = 0;
     type PreparedPlainChunk = { plaintext: Uint8Array; plaintextLength: number; recordEnd: number };
     const fullRecordBytes = 4 + header.chunkSize + TAG_BYTES;
@@ -901,30 +571,26 @@ export async function decryptFileStreaming(file: File, options: StreamDecryptOpt
       return { plaintext, plaintextLength, recordEnd };
     };
 
-    const inFlight = new Map<number, Promise<PreparedPlainChunk>>();
-    const schedule = (chunk: number) => {
-      if (chunk < meta.chunks) inFlight.set(chunk, prepareChunk(chunk));
-    };
-    for (let chunk = 0; chunk < Math.min(concurrency, meta.chunks); chunk += 1) schedule(chunk);
-
     let finalRecordEnd = metaEnd;
-    for (let chunk = 0; chunk < meta.chunks; chunk += 1) {
-      assertNotCancelled(options.shouldCancel);
-      const prepared = await inFlight.get(chunk)!;
-      inFlight.delete(chunk);
-      schedule(chunk + concurrency);
-      const writeStarted = performance.now();
-      try {
-        await writable.write(prepared.plaintext);
-      } catch (error) {
-        throw describeFileSystemError(error, 'write');
-      }
-      metrics.writeBytes += prepared.plaintext.byteLength;
-      metrics.writeMs += performance.now() - writeStarted;
-      finalRecordEnd = prepared.recordEnd;
-      processed += prepared.plaintextLength;
-      report(processed);
-    }
+    await runBoundedPipeline(
+      meta.chunks,
+      concurrency,
+      prepareChunk,
+      async (_index, prepared) => {
+        const writeStarted = performance.now();
+        try {
+          await writable.write(prepared.plaintext);
+        } catch (error) {
+          throw describeFileSystemError(error, 'write');
+        }
+        metrics.writeBytes += prepared.plaintext.byteLength;
+        metrics.writeMs += performance.now() - writeStarted;
+        finalRecordEnd = prepared.recordEnd;
+        processed += prepared.plaintextLength;
+        report(processed);
+      },
+      options.shouldCancel,
+    );
     if (processed !== meta.size) throw new Error('解密后的文件长度不完整。');
     if (finalRecordEnd !== file.size) throw new Error('CRYPTA 密文末尾包含未认证的额外数据。');
     try {
