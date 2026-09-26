@@ -10,7 +10,6 @@
   color-scheme: dark;
   color-scheme: only dark;
   --bg: #08090b;
-  --panel: rgba(18, 20, 24, 0.82);
   --panel-strong: #121418;
   --panel-soft: #16191f;
   --line: rgba(255, 255, 255, 0.08);
@@ -25,8 +24,6 @@
   --primary-hover: #99ceff;
   --primary-text: #0d1217;
   --radius-xl: 28px;
-  --radius-lg: 20px;
-  --radius-md: 14px;
 }
 
 :root[data-theme='light'] {
@@ -35,7 +32,6 @@
   color: #1a1c1f;
   background: #f1f3f6;
   --bg: #f1f3f6;
-  --panel: rgba(255, 255, 255, 0.86);
   --panel-strong: #ffffff;
   --panel-soft: #eceff3;
   --line: rgba(29, 34, 42, 0.1);
@@ -274,19 +270,6 @@ footer {
   text-align: center;
 }
 
-.eyebrow {
-  width: fit-content;
-  margin: 0 auto 18px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--accent);
-  font-size: 12px;
-  font-weight: 750;
-  letter-spacing: 0.11em;
-  text-transform: uppercase;
-}
-
 .hero h1 {
   margin: 0;
   font-size: clamp(42px, 6vw, 72px);
@@ -304,30 +287,6 @@ footer {
   color: var(--muted);
   font-size: 17px;
   line-height: 1.7;
-}
-
-.hero-pills {
-  display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-top: 26px;
-}
-
-.hero-pills span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  color: #a9afb9;
-  background: rgba(255, 255, 255, 0.025);
-  font-size: 11px;
-}
-
-.hero-pills svg {
-  color: var(--accent);
 }
 
 .workspace-card {
@@ -425,13 +384,6 @@ footer {
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 11px;
   letter-spacing: 0.06em;
-}
-
-.subtle-label {
-  color: #5d6470;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  font-size: 9px;
-  letter-spacing: 0.14em;
 }
 
 .algorithm-grid {
@@ -666,6 +618,12 @@ footer {
   padding: 15px;
   border-style: solid;
   cursor: default;
+}
+
+/* 处理中禁止换文件 / File picking is locked while processing */
+.dropzone.busy {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .hidden-input {
@@ -1161,18 +1119,15 @@ footer {
 :root[data-theme='light'] .file-details strong,
 :root[data-theme='light'] .result-heading strong,
 :root[data-theme='light'] .result-file-row strong,
-:root[data-theme='light'] .security-card h3,
-:root[data-theme='light'] .generator-toggle strong {
+:root[data-theme='light'] .security-card h3 {
   color: #23262a;
 }
 
 :root[data-theme='light'] .step-number,
-:root[data-theme='light'] .subtle-label,
 :root[data-theme='light'] .algorithm-badge,
 :root[data-theme='light'] .algorithm-card p,
 :root[data-theme='light'] .file-details span,
 :root[data-theme='light'] .key-meta-row,
-:root[data-theme='light'] .generator-field > span,
 :root[data-theme='light'] .progress-meta,
 :root[data-theme='light'] .progress-stages,
 :root[data-theme='light'] .result-file-row span,
@@ -1226,19 +1181,13 @@ footer {
 :root[data-theme='light'] .textarea-wrap textarea,
 :root[data-theme='light'] .result-text,
 :root[data-theme='light'] .dropzone,
-:root[data-theme='light'] .key-input-shell,
-:root[data-theme='light'] .generator-options select,
-:root[data-theme='light'] .algorithm-fixed,
-:root[data-theme='light'] .generator-toggle,
-:root[data-theme='light'] .password-result {
+:root[data-theme='light'] .key-input-shell {
   background: rgba(255, 255, 255, 0.78);
   color: #2d3136;
 }
 
 :root[data-theme='light'] .textarea-wrap textarea,
-:root[data-theme='light'] .key-input-shell input,
-:root[data-theme='light'] .generator-options select,
-:root[data-theme='light'] .algorithm-fixed {
+:root[data-theme='light'] .key-input-shell input {
   color: #2d3136;
 }
 
@@ -1262,8 +1211,7 @@ footer {
 
 :root[data-theme='light'] .dropzone > p,
 :root[data-theme='light'] .char-count,
-:root[data-theme='light'] .key-input-shell > svg,
-:root[data-theme='light'] .generator-toggle small {
+:root[data-theme='light'] .key-input-shell > svg {
   color: #8f9399;
 }
 
@@ -1279,31 +1227,9 @@ footer {
   color: #70747b;
 }
 
-:root[data-theme='light'] .algorithm-fixed,
-:root[data-theme='light'] .password-output {
-  color: #4b4f56;
-}
-
-:root[data-theme='light'] .generator-toggle > i {
-  background: #d5d9de;
-}
-
-:root[data-theme='light'] .generator-toggle > i > span {
-  background: #8f949c;
-}
-
-:root[data-theme='light'] .password-result.ready,
 :root[data-theme='light'] .result-card,
 :root[data-theme='light'] .progress-card {
   background: rgba(43, 155, 239, 0.055);
-}
-
-:root[data-theme='light'] .password-result.ready .password-output {
-  color: #2b2f34;
-}
-
-:root[data-theme='light'] .password-output {
-  border-color: #c0c5cb;
 }
 
 :root[data-theme='light'] .progress-topline {
@@ -1881,7 +1807,8 @@ footer {
 
 .exchange-field input { height: 42px; padding: 0 11px; }
 .exchange-field textarea { min-height: 88px; padding: 10px 11px; resize: vertical; line-height: 1.55; }
-.exchange-field input:focus, .exchange-field textarea:focus { border-color: rgba(123, 191, 255, 0.27); }
+.exchange-field input:focus,
+.exchange-field textarea:focus { border-color: rgba(123, 191, 255, 0.27); }
 
 .exchange-value-row { display: flex; align-items: center; gap: 5px; }
 .exchange-value-row input { flex: 1; }
@@ -1995,7 +1922,8 @@ footer {
 }
 
 .exchange-recovered > div { min-width: 0; flex: 1; }
-.exchange-recovered strong, .exchange-recovered span { display: block; }
+.exchange-recovered strong,
+.exchange-recovered span { display: block; }
 .exchange-recovered strong { color: #dfe2e7; font-size: 11px; }
 .exchange-recovered div > span { margin-top: 3px; color: #5d6670; font-size: 9px; }
 .exchange-recovered button { padding: 0 12px; color: #9ec2e4; }
@@ -2007,7 +1935,8 @@ footer {
   background: rgba(255, 255, 255, 0.015);
 }
 
-.exchange-security-note strong, .exchange-security-note span { display: block; }
+.exchange-security-note strong,
+.exchange-security-note span { display: block; }
 .exchange-security-note strong { margin-bottom: 3px; color: #aeb4bd; font-size: 10px; }
 
 :root[data-theme='light'] .exchange-recovered strong { color: #2d3136; }
@@ -2477,14 +2406,6 @@ footer {
     grid-template-columns: 1fr;
   }
 
-  .password-layout {
-    grid-template-columns: 1fr;
-  }
-
-  .password-main {
-    border-right: 0;
-  }
-
   .main-panel {
     border-right: 0;
   }
@@ -2603,12 +2524,6 @@ footer {
     margin-top: 16px;
     font-size: 13px;
     line-height: 1.6;
-  }
-
-  .password-hero h1 {
-    font-size: clamp(28px, 8.4vw, 38px);
-    line-height: 1.12;
-    letter-spacing: -0.04em;
   }
 
   .integrity-hero h1 {
@@ -2917,10 +2832,6 @@ footer {
     gap: 9px;
   }
 
-  .generator-options {
-    grid-template-columns: 1fr;
-  }
-
   .algorithm-card {
     min-height: 108px;
     padding: 14px;
@@ -2967,8 +2878,7 @@ footer {
 
   .textarea-wrap textarea,
   .result-text,
-  .key-input-shell input,
-  .generator-options select {
+  .key-input-shell input {
     font-size: 16px;
   }
 
@@ -3207,23 +3117,6 @@ footer {
     font-size: 12px;
   }
 
-  .generator-field > span {
-    font-size: 10px;
-  }
-
-  .generator-toggle {
-    min-height: 54px;
-  }
-
-  .password-result {
-    padding: 13px;
-  }
-
-  .password-output {
-    min-height: 58px;
-    font-size: clamp(17px, 5vw, 22px);
-  }
-
   footer {
     min-height: 68px;
     padding-bottom: env(safe-area-inset-bottom);
@@ -3301,7 +3194,8 @@ footer {
 /* ============================================================
    全站半透明玻璃 · v6 Site-wide translucent glass · v6
    透明层、柔和环境色与细高光描边；不再使用厚重实体投影或透视倾斜。
-   Translucent layers, soft ambient tint and fine highlight strokes;
+   Translucent layers,
+soft ambient tint and fine highlight strokes;
    no heavy solid shadows or perspective tilt.
    ============================================================ */
 
@@ -3522,8 +3416,6 @@ body {
 .algorithm-card,
 .auto-detect-card,
 .security-card,
-.generator-toggle,
-.password-result,
 .result-card,
 .key-distribution,
 .integrity-dropzone,
@@ -3553,8 +3445,6 @@ body {
 :root[data-theme='light'] .algorithm-card,
 :root[data-theme='light'] .auto-detect-card,
 :root[data-theme='light'] .security-card,
-:root[data-theme='light'] .generator-toggle,
-:root[data-theme='light'] .password-result,
 :root[data-theme='light'] .result-card,
 :root[data-theme='light'] .key-distribution,
 :root[data-theme='light'] .integrity-dropzone,
@@ -3599,11 +3489,8 @@ body {
 .result-text,
 .dropzone,
 .key-input-shell,
-.generator-options select,
-.algorithm-fixed,
 .exchange-field input,
 .exchange-field textarea,
-.password-output,
 .chat-join,
 .chat-composer textarea {
   border-color: var(--glass-line);
@@ -3619,11 +3506,8 @@ body {
 :root[data-theme='light'] .result-text,
 :root[data-theme='light'] .dropzone,
 :root[data-theme='light'] .key-input-shell,
-:root[data-theme='light'] .generator-options select,
-:root[data-theme='light'] .algorithm-fixed,
 :root[data-theme='light'] .exchange-field input,
 :root[data-theme='light'] .exchange-field textarea,
-:root[data-theme='light'] .password-output,
 :root[data-theme='light'] .chat-join,
 :root[data-theme='light'] .chat-composer textarea {
   background: var(--glass-field);
@@ -3733,7 +3617,6 @@ body {
 }
 
 .algorithm-card,
-.generator-toggle,
 .key-distribution-toggle,
 .integrity-algo-chip {
   transform-origin: center;
@@ -3742,7 +3625,6 @@ body {
 
 @media (hover: hover) and (pointer: fine) {
   .algorithm-card:hover,
-  .generator-toggle:hover,
   .integrity-algo-chip:hover:not(:disabled),
   .chat-create:hover {
     transform: translateY(-1px);
@@ -3833,8 +3715,6 @@ body {
   .algorithm-card,
   .auto-detect-card,
   .security-card,
-  .generator-toggle,
-  .password-result,
   .result-card,
   .key-distribution,
   .integrity-dropzone,
@@ -3856,7 +3736,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .algorithm-card,
-  .generator-toggle,
   .key-distribution-toggle,
   .integrity-algo-chip,
   .chat-create {
@@ -3905,6 +3784,18 @@ body {
   background:
     linear-gradient(135deg, rgba(75, 212, 161, 0.13), rgba(80, 173, 225, 0.08)),
     var(--glass-soft);
+}
+
+/* 未核验状态：琥珀色提示该徽章是必经步骤 / Unverified state: amber marks the badge as a required step */
+.chat-safety-badge.unverified {
+  border-color: rgba(232, 195, 90, 0.42);
+  background:
+    linear-gradient(135deg, rgba(232, 195, 90, 0.12), rgba(214, 138, 56, 0.07)),
+    var(--glass-soft);
+}
+
+.chat-safety-badge.unverified .chat-safety-badge-state {
+  color: #e8c35a;
 }
 
 .chat-safety-badge-icon {
@@ -4148,6 +4039,28 @@ body {
   color: var(--accent);
 }
 
+/* 对方核验状态 / Peer verification status */
+.safety-badge-peer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--glass-line);
+  border-radius: 12px;
+  color: var(--muted-2);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.safety-badge-peer.ok {
+  border-style: solid;
+  border-color: rgba(75, 212, 161, 0.4);
+  background: rgba(75, 212, 161, 0.08);
+  color: #58d2a4;
+}
+
 .safety-badge-confirm {
   width: 100%;
   min-height: 48px;
@@ -4164,6 +4077,11 @@ body {
   cursor: pointer;
   font-size: 12px;
   font-weight: 760;
+}
+
+.safety-badge-confirm:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 :root[data-theme='light'] .safety-badge-overlay {
@@ -4241,7 +4159,9 @@ body {
    顶光照明 + 环境影 + 接触影的柔和立体层级；
    Top lighting + ambient shadow + contact shadow for soft depth;
    消息为受光气泡，输入区为下沉凹槽，按钮为可按压浮起件
-   Lit message bubbles, sunken composer groove, pressable raised buttons.
+   Lit message bubbles,
+sunken composer groove,
+pressable raised buttons.
    ============================================================ */
 
 .chat-page {
@@ -4509,31 +4429,6 @@ body {
   font-weight: 500;
 }
 
-.chat-safety {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, transparent);
-  border-radius: 10px;
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 13%, transparent), color-mix(in srgb, var(--accent) 7%, transparent));
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 2px 8px -4px rgba(0, 0, 0, 0.4);
-  color: var(--accent);
-  padding: 3px 10px;
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 0.72rem;
-  letter-spacing: 0.08em;
-  cursor: copy;
-  transition: border-color 0.2s ease, transform 0.15s ease;
-}
-
-.chat-safety:hover {
-  border-color: var(--accent);
-}
-
-.chat-safety:active {
-  transform: translateY(1px);
-}
-
 .chat-header-right {
   display: flex;
   gap: 8px;
@@ -4656,6 +4551,11 @@ body {
 
 .chat-notice.danger {
   color: var(--danger);
+}
+
+.chat-verify-notice {
+  color: #e8c35a;
+  background: color-mix(in srgb, #e8c35a 6%, var(--panel-soft));
 }
 
 .chat-notice button {
@@ -4839,7 +4739,8 @@ body {
   opacity: 0.78;
 }
 
-/* 连续消息的液态桥接：用局部几何，不模糊整组。 / Grouped-message bridge uses local geometry, not whole-group blur. */
+/* 连续消息的液态桥接：用局部几何，不模糊整组。 / Grouped-message bridge uses local geometry,
+not whole-group blur. */
 .chat-liquid-bridge {
   position: absolute;
   top: -7px;
@@ -4914,12 +4815,14 @@ body {
 .chat-ticks {
   display: inline-flex;
   color: var(--primary-text);
-  opacity: 0.85;
-  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.3));
+  opacity: 0.7;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
 }
 
-.chat-ticks svg {
-  display: block;
+.chat-ticks.read {
+  opacity: 1;
 }
 
 .chat-image {
@@ -5244,7 +5147,8 @@ body {
 }
 
 /* 0–240ms 发送动效：故障闪烁 → 锁定粒子 → 投射；仅改变 transform/opacity，随后立即移除效果 DOM。
-   0–240ms send effect: glitch → lock particle → projectile; transform/opacity only, then remove its DOM. */
+   0–240ms send effect: glitch → lock particle → projectile; transform/opacity only,
+then remove its DOM. */
 .chat-send-fx {
   position: absolute;
   inset: 0 42px 0 0;
@@ -5499,7 +5403,7 @@ body {
 .chat-emoji-btn {
   position: absolute;
   right: 8px;
-  bottom: 8px;
+  bottom: 6px;
   display: grid;
   place-items: center;
   width: 32px;
@@ -5718,12 +5622,45 @@ body {
 
   .chat-bubble {
     max-width: 86%;
+    padding: 8px 11px 7px;
     backdrop-filter: blur(11px) saturate(145%);
     -webkit-backdrop-filter: blur(11px) saturate(145%);
   }
 
-  .chat-safety {
-    display: none;
+  /* 小窗内更紧凑的字阶 / Tighter type scale for the small window. */
+  .chat-bubble p {
+    font-size: 0.85rem;
+    line-height: 1.55;
+  }
+
+  .chat-meta {
+    font-size: 0.62rem;
+  }
+
+  .chat-ticks {
+    font-size: 0.58rem;
+  }
+
+  .chat-status-text {
+    font-size: 0.8rem;
+  }
+
+  .chat-empty {
+    font-size: 0.78rem;
+  }
+
+  .chat-notice {
+    font-size: 0.78rem;
+  }
+
+  .chat-invite-panel {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  .chat-composer {
+    padding-top: 10px;
+    padding-bottom: 12px;
   }
 
   /* 触控目标至少 44px。 / Touch targets are at least 44px. */
@@ -5737,9 +5674,17 @@ body {
     height: 46px;
   }
 
+  /* 38px 按钮在约 47px 高的输入框内垂直居中（16px 防缩放字号会把输入框撑高）。
+     The 38px button centers in the ~47px-tall input (the 16px no-zoom font inflates it). */
   .chat-emoji-btn {
     width: 38px;
     height: 38px;
+    right: 6px;
+    bottom: 4px;
+  }
+
+  .chat-input-wrap textarea {
+    padding-right: 50px;
   }
 
   .chat-log {
@@ -5835,11 +5780,11 @@ body {
 
 /* ============================================================
    全站轻量 3D · v5：仅用 CSS 光照、短投影与按压反馈。
-   Site-wide light 3D · v5: CSS lighting, short shadows and press feedback only.
+   Site-wide light 3D · v5: CSS lighting,
+short shadows and press feedback only.
    ============================================================ */
 
 :root {
-  --surface-raised: linear-gradient(155deg, rgba(27, 31, 39, 0.96), rgba(13, 15, 20, 0.96));
   --surface-soft-3d: linear-gradient(155deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.012));
   --surface-inset: rgba(7, 9, 13, 0.72);
   --edge-light: rgba(255, 255, 255, 0.075);
@@ -5860,7 +5805,6 @@ body {
 }
 
 :root[data-theme='light'] {
-  --surface-raised: linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(235, 240, 247, 0.96));
   --surface-soft-3d: linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(234, 239, 246, 0.72));
   --surface-inset: rgba(224, 230, 238, 0.66);
   --edge-light: rgba(255, 255, 255, 0.94);
@@ -6047,8 +5991,6 @@ body {
 .algorithm-card,
 .auto-detect-card,
 .security-card,
-.generator-toggle,
-.password-result,
 .result-card,
 .key-distribution,
 .integrity-dropzone,
@@ -6060,7 +6002,6 @@ body {
 }
 
 .algorithm-card,
-.generator-toggle,
 .key-distribution-toggle,
 .integrity-algo-chip {
   transform-origin: 50% 100%;
@@ -6085,12 +6026,9 @@ body {
 .result-text,
 .dropzone,
 .key-input-shell,
-.generator-options select,
-.algorithm-fixed,
 .exchange-field input,
 .exchange-field textarea,
-.integrity-table-wrap,
-.password-output {
+.integrity-table-wrap {
   background: var(--surface-inset);
   box-shadow: var(--shadow-inset);
 }
@@ -6153,7 +6091,6 @@ body {
 
 @media (hover: hover) and (pointer: fine) {
   .algorithm-card:hover,
-  .generator-toggle:hover,
   .integrity-algo-chip:hover:not(:disabled) {
     transform: perspective(720px) translateY(-3px) rotateX(1.2deg);
     box-shadow:
@@ -6190,9 +6127,10 @@ body {
     display: none;
   }
 
-  .workspace-card,
-  .chat-shell,
-  .chat-lobby,
+  /* 聊天面板保留玻璃模糊：移动端默认开启动态玻璃，其余卡片去模糊省重绘。
+     Chat keeps its glass blur — dynamic glass is on by default on mobile; other
+     cards drop the blur to save repaints. */
+  .workspace-card:not(.chat-shell):not(.chat-lobby),
   .action-dock-mobile {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
@@ -6214,7 +6152,6 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .algorithm-card,
-  .generator-toggle,
   .key-distribution-toggle,
   .integrity-algo-chip {
     will-change: auto;
@@ -6353,8 +6290,6 @@ body,
 .algorithm-card,
 .auto-detect-card,
 .security-card,
-.generator-toggle,
-.password-result,
 .result-card,
 .key-distribution,
 .integrity-dropzone,
@@ -6384,8 +6319,6 @@ body,
 :root[data-theme='light'] .algorithm-card,
 :root[data-theme='light'] .auto-detect-card,
 :root[data-theme='light'] .security-card,
-:root[data-theme='light'] .generator-toggle,
-:root[data-theme='light'] .password-result,
 :root[data-theme='light'] .result-card,
 :root[data-theme='light'] .key-distribution,
 :root[data-theme='light'] .integrity-dropzone,
@@ -6418,11 +6351,8 @@ body,
 .result-text,
 .dropzone,
 .key-input-shell,
-.generator-options select,
-.algorithm-fixed,
 .exchange-field input,
 .exchange-field textarea,
-.password-output,
 .chat-join,
 .chat-composer textarea {
   border-color: var(--glass-line);
@@ -6436,11 +6366,8 @@ body,
 :root[data-theme='light'] .result-text,
 :root[data-theme='light'] .dropzone,
 :root[data-theme='light'] .key-input-shell,
-:root[data-theme='light'] .generator-options select,
-:root[data-theme='light'] .algorithm-fixed,
 :root[data-theme='light'] .exchange-field input,
 :root[data-theme='light'] .exchange-field textarea,
-:root[data-theme='light'] .password-output,
 :root[data-theme='light'] .chat-join,
 :root[data-theme='light'] .chat-composer textarea {
   background: var(--glass-field);
@@ -6513,7 +6440,6 @@ body,
 }
 
 .algorithm-card,
-.generator-toggle,
 .key-distribution-toggle,
 .integrity-algo-chip {
   transform-origin: center;
@@ -6522,7 +6448,6 @@ body,
 
 @media (hover: hover) and (pointer: fine) {
   .algorithm-card:hover,
-  .generator-toggle:hover,
   .integrity-algo-chip:hover:not(:disabled),
   .chat-create:hover {
     transform: translateY(-1px);
@@ -6593,7 +6518,6 @@ body,
 
 @media (prefers-reduced-motion: reduce) {
   .algorithm-card,
-  .generator-toggle,
   .key-distribution-toggle,
   .integrity-algo-chip,
   .chat-create {

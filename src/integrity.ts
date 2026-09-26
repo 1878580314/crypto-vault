@@ -243,13 +243,19 @@ function parseTextManifest(text: string): IntegrityManifest {
 export function parseManifest(text: string): IntegrityManifest {
   const trimmed = text.trim();
   if (trimmed.startsWith('{')) {
+    // 以 '{' 开头的文件按 JSON 处理：JSON 语法损坏时静默落到文本解析只会得到
+    // “无法识别某一行”这类误导性报错，直接给出 JSON 诊断更准确。
+    // A '{'-prefixed file is handled as JSON: silently falling back to text parsing on a
+    // syntax error only produces a misleading "unrecognized line" — report the JSON error instead.
+    let parsed: unknown;
     try {
-      const fromJson = parseJsonManifest(JSON.parse(trimmed));
-      if (fromJson) return fromJson;
-      throw new Error('无法识别该校验清单。');
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('清单')) throw error;
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new Error('校验清单不是有效的 JSON 文件。');
     }
+    const fromJson = parseJsonManifest(parsed);
+    if (fromJson) return fromJson;
+    throw new Error('无法识别该校验清单。');
   }
   return parseTextManifest(text);
 }

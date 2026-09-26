@@ -16,6 +16,8 @@ export interface VideoCompressionSession {
     writeAt: (position: number, chunk: Uint8Array) => Promise<void>,
     onProgress?: (ratio: number) => void,
   ): Promise<number>;
+  /** 释放底层输入资源；execute() 正常跑完也会调用，重复调用安全。 / Release the input; execute() calls it too, so double-dispose is safe. */
+  dispose(): void;
 }
 
 async function compressImageLocally(file: File, onProgress?: (ratio: number) => void): Promise<File> {
@@ -108,6 +110,10 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
   } = await import('mediabunny');
 
   const input = new Input({ formats: ALL_FORMATS, source: new BlobSource(file) });
+  // 幂等释放：init 失败、execute finally 与调用方兜底共用同一出口。 / Idempotent dispose shared by init-failure, execute's finally, and the caller's fallback.
+  const disposeInput = () => {
+    if (!input.disposed) input.dispose();
+  };
   let sink: ((position: number, chunk: Uint8Array) => Promise<void>) | undefined;
   let maxWrittenEnd = 0;
   const writable = new WritableStream<StreamTargetChunk>({
@@ -138,11 +144,15 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
           track.getDisplayHeight(),
           track.computeFrameRateMetrics({ targetPacketCount: 64 }),
         ]);
+        // 探测不到帧率（过短/异常封装）时让 Mediabunny 自行决定，而不是传 NaN/0。
+        // When probing yields no usable rate (too short / odd container), let Mediabunny
+        // decide rather than feeding it NaN/0.
+        const fps = frameRate.bestGuessFrameRate;
         return {
           codec: 'avc',
-          height: Math.min(720, displayHeight),
+          ...(Number.isFinite(displayHeight) && displayHeight > 0 ? { height: Math.min(720, displayHeight) } : {}),
           // 只将高帧率视频限制到 30 fps，避免上采样 24/25 fps 源。 / Cap only high-fps video at 30 fps; do not upsample 24/25 fps sources.
-          frameRate: Math.min(30, frameRate.bestGuessFrameRate),
+          ...(Number.isFinite(fps) && fps > 0 ? { frameRate: Math.min(30, fps) } : {}),
           quality: new Quality('medium'),
           hardwareAcceleration: 'prefer-hardware',
           forceTranscode: true,
@@ -158,7 +168,7 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
     });
   } catch {
     await output.cancel().catch(() => undefined);
-    input.dispose();
+    disposeInput();
     return null;
   }
 
@@ -167,7 +177,7 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
   // fall back to the original file when conversion cannot complete.
   if (!conversion.isValid || conversion.utilizedTracks.length === 0 || conversion.discardedTracks.length > 0) {
     await conversion.cancel().catch(() => undefined);
-    input.dispose();
+    disposeInput();
     return null;
   }
 
@@ -185,8 +195,9 @@ export async function createVideoCompressionSession(file: File): Promise<VideoCo
         return maxWrittenEnd;
       } finally {
         sink = undefined;
-        input.dispose();
+        disposeInput();
       }
     },
+    dispose: disposeInput,
   };
 }

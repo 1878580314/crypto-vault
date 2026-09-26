@@ -112,7 +112,6 @@ export default function IntegrityChecker() {
   const [manifest, setManifest] = useState<IntegrityManifest | null>(null);
   const [manifestName, setManifestName] = useState('');
   const [busy, setBusy] = useState(false);
-  const [cancelling, setCancelling] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<ProgressState | null>(null);
   const filesInputRef = useRef<HTMLInputElement>(null);
@@ -225,7 +224,6 @@ export default function IntegrityChecker() {
     for (const worker of workerRefs.current) worker.terminate();
     workerRefs.current = [];
     setBusy(true);
-    setCancelling(false);
     setProgress(null);
     setRows((current) => current.map((row) => ({ ...row, hashes: undefined, error: undefined, active: false })));
 
@@ -246,7 +244,6 @@ export default function IntegrityChecker() {
       for (const worker of workerRefs.current) worker.terminate();
       workerRefs.current = [];
       setBusy(false);
-      setCancelling(false);
       setRows((current) => current.map((row) => ({ ...row, active: false })));
       if (outcome === 'cancelled') {
         toast.info('批量校验已取消');
@@ -381,13 +378,14 @@ export default function IntegrityChecker() {
   };
 
   const cancelHashing = () => {
-    if (workerRefs.current.length === 0 || cancelling) return;
-    setCancelling(true);
+    // 同步终止全部 Worker，取消立即生效（原实现里 setCancelling 一置一清，状态从未可见，已删）。
+    // Terminating every worker makes cancellation instant (the old cancelling flag
+    // was set and cleared synchronously, never observable — removed).
+    if (workerRefs.current.length === 0) return;
     for (const worker of workerRefs.current) worker.terminate();
     workerRefs.current = [];
     setRows((current) => current.map((row) => ({ ...row, active: false })));
     setBusy(false);
-    setCancelling(false);
     toast.info('批量校验已取消');
   };
 
@@ -594,7 +592,7 @@ export default function IntegrityChecker() {
 
         <div className="integrity-actions">
           {busy ? (
-            <button type="button" className="integrity-cancel" onClick={cancelHashing} disabled={cancelling}><X size={16} /> {cancelling ? '正在取消…' : '取消计算'}</button>
+            <button type="button" className="integrity-cancel" onClick={cancelHashing}><X size={16} /> 取消计算</button>
           ) : (
             <button type="button" className="integrity-primary" onClick={startHashing} disabled={rows.length === 0 || algorithms.length === 0}><Hash size={17} /> {manifest ? '开始批量校验' : '计算全部摘要'}</button>
           )}

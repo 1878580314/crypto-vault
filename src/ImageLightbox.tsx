@@ -1,6 +1,7 @@
 import { X } from 'lucide-react';
 import { useEffect, useId, useRef } from 'react';
 import { createPortal } from 'react-dom';
+import { useFocusTrap } from './useFocusTrap';
 
 interface ImageLightboxProps {
   url: string;
@@ -10,8 +11,10 @@ interface ImageLightboxProps {
 
 export default function ImageLightbox({ url, name, onClose }: ImageLightboxProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const titleId = useId();
+  useFocusTrap(dialogRef, true);
 
   useEffect(() => {
     previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -34,6 +37,7 @@ export default function ImageLightbox({ url, name, onClose }: ImageLightboxProps
   return createPortal(
     <div className="chat-image-lightbox-overlay" role="presentation" onPointerDown={onClose}>
       <section
+        ref={dialogRef}
         className="chat-image-lightbox-dialog"
         role="dialog"
         aria-modal="true"

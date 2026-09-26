@@ -41,6 +41,19 @@ const SEQ_BYTES = 4;
  * from malicious input. 1024 leaves headroom for reconnect message caches.
  */
 export const MAX_SEQ_GAP = 1024;
+/**
+ * 旧版单帧图片载荷的上限（媒体分片协议之外的遗留兼容通道）。
+ * Legacy single-frame image payload cap; the chunked media protocol supersedes it.
+ */
+export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+/**
+ * 单帧密文上限：合法帧最大为旧版 4 MiB 图片帧，8 MiB 已留足信封余量；
+ * 更大的帧在 AEAD 之前直接拒绝，挡住中继推送的超大恶意帧（避免先解密再失败的 CPU 开销）。
+ * Frame size ceiling: the largest legitimate frame is a legacy 4 MiB image, so 8 MiB leaves
+ * ample envelope headroom; bigger frames are rejected before AEAD to deny the relay a
+ * free decrypt-then-fail CPU burn.
+ */
+export const MAX_FRAME_BYTES = 8 * 1024 * 1024;
 
 const enc = (text: string) => new TextEncoder().encode(text);
 
@@ -65,7 +78,9 @@ export type WirePayload =
   | { k: 'media-end'; id: string; size: number; chunks: number }
   | { k: 'media-cancel'; id: string }
   /** 已读回执：已确认收到对方发送链的第 upTo 条（不含） / Read receipt: peer's tx chain confirmed up to (exclusive) */
-  | { k: 'read'; upTo: number };
+  | { k: 'read'; upTo: number }
+  /** 徽章核验确认：fp 为确认方所见徽章指纹前缀，与当前会话绑定 / Badge confirmation; fp binds it to the current session fingerprint */
+  | { k: 'verify'; fp: string };
 
 export const MEDIA_CHUNK_BYTES = 256 * 1024;
 
@@ -83,7 +98,6 @@ export interface ChatSession {
   psk: Uint8Array | null;
   publicKey: Uint8Array;
   privateKey: Uint8Array;
-  sessionKey: Uint8Array | null;
   peerPublicKey: Uint8Array | null;
   /** 双方由本次 master 独立派生的视觉安全徽章种子（32 字节，小写 64 位 hex）
    *  Safety-badge seed derived from this master by both sides (32 bytes, lowercase 64-char hex) */
@@ -113,6 +127,12 @@ export function roomCodeOf(session: { roomId: string; psk: Uint8Array | null }):
 export async function createSession(roomCode?: string): Promise<ChatSession> {
   const s = await loadSodium();
   const parsed = roomCode ? parseRoomCode(roomCode) : { room: null, psk: null as Uint8Array | null };
+  // 裸房间码（无 PSK 部分）属于显式降级模式：这里若静默补随机 PSK，对方按原链接加入会握手失败。
+  // A bare room code means an explicitly degraded session; silently minting a random PSK here
+  // would desync the peer that joins with the original link.
+  if (roomCode !== undefined && parsed.psk === null) {
+    throw new Error('房间码缺少预共享密钥；无密钥会话请显式使用降级入口。');
+  }
   if (parsed.psk && parsed.psk.length !== PSK_BYTES) throw new Error('预共享密钥长度无效');
   const room = parsed.room ?? b64(s.randombytes_buf(ROOM_BYTES));
   const psk = parsed.psk ?? s.randombytes_buf(PSK_BYTES); // 默认创建即带 PSK / New sessions include a PSK by default
@@ -122,7 +142,6 @@ export async function createSession(roomCode?: string): Promise<ChatSession> {
     psk,
     publicKey: pair.publicKey,
     privateKey: pair.privateKey,
-    sessionKey: null,
     peerPublicKey: null,
     safetyBadgeSeed: null,
     pskProtected: true,
@@ -140,7 +159,6 @@ export async function createInsecureSession(roomId: string): Promise<ChatSession
     psk: null,
     publicKey: pair.publicKey,
     privateKey: pair.privateKey,
-    sessionKey: null,
     peerPublicKey: null,
     safetyBadgeSeed: null,
     pskProtected: false,
@@ -199,25 +217,29 @@ export async function establishSession(session: ChatSession, peerPublicKey: Uint
     roomKey.fill(0);
   }
 
-  const chain1 = kdf('crypta-chat:v3:chain-1', master, KEY_BYTES);
-  const chain2 = kdf('crypta-chat:v3:chain-2', master, KEY_BYTES);
-  const safetyBadgeBytes = kdf('crypta-chat:v3:safety-badge', master, KEY_BYTES);
-  let safetyBadgeSeed: string;
   try {
-    safetyBadgeSeed = bytesToHex(safetyBadgeBytes);
-  } finally {
-    safetyBadgeBytes.fill(0);
-  }
+    const chain1 = kdf('crypta-chat:v3:chain-1', master, KEY_BYTES);
+    const chain2 = kdf('crypta-chat:v3:chain-2', master, KEY_BYTES);
+    const safetyBadgeBytes = kdf('crypta-chat:v3:safety-badge', master, KEY_BYTES);
+    let safetyBadgeSeed: string;
+    try {
+      safetyBadgeSeed = bytesToHex(safetyBadgeBytes);
+    } finally {
+      safetyBadgeBytes.fill(0);
+    }
 
-  // 这是重协商入口：新状态提交前清除旧会话的可复用材料 / Renegotiation entry: purge old reusable material before committing the new state.
-  session.sessionKey?.fill(0);
-  session.tx?.chain.fill(0);
-  session.rx?.chain.fill(0);
-  session.sessionKey = master;
-  session.tx = { chain: cmp < 0 ? chain1 : chain2, nextSeq: 0, acked: 0 };
-  session.rx = { chain: cmp < 0 ? chain2 : chain1, nextSeq: 0, acked: 0 };
-  session.safetyBadgeSeed = safetyBadgeSeed;
-  session.peerPublicKey = peerPublicKey;
+    // 这是重协商入口：新状态提交前清除旧会话的可复用材料 / Renegotiation entry: purge old reusable material before committing the new state.
+    session.tx?.chain.fill(0);
+    session.rx?.chain.fill(0);
+    session.tx = { chain: cmp < 0 ? chain1 : chain2, nextSeq: 0, acked: 0 };
+    session.rx = { chain: cmp < 0 ? chain2 : chain1, nextSeq: 0, acked: 0 };
+    session.safetyBadgeSeed = safetyBadgeSeed;
+    session.peerPublicKey = peerPublicKey;
+  } finally {
+    // master 仅用于派生双方向链与徽章种子，提交后立即清零、不驻留会话。
+    // master only seeds the chains and badge; zero it on commit rather than retaining it.
+    master.fill(0);
+  }
 }
 
 function compareBytes(a: Uint8Array, b: Uint8Array): number {
@@ -324,6 +346,11 @@ function decodeWirePayload(plaintext: Uint8Array): WirePayload {
         throw new Error('已读回执载荷结构无效');
       }
       return { k: 'read', upTo: value.upTo };
+    case 'verify':
+      if (typeof value.fp !== 'string' || value.fp.length < 1 || value.fp.length > 128) {
+        throw new Error('徽章核验载荷结构无效');
+      }
+      return { k: 'verify', fp: value.fp };
     default:
       throw new Error('载荷类型无效');
   }
@@ -340,7 +367,15 @@ export async function sealFrame(
   payload: WirePayload
 ): Promise<{ frame: Uint8Array; seq: number }> {
   const s = await loadSodium();
-  if (!session.tx || !session.sessionKey) throw new Error('会话密钥尚未建立');
+  if (!session.tx) throw new Error('会话密钥尚未建立');
+
+  // 载荷超过单帧上限时先拒绝再推进棘轮：发出方不应为必然被拒的帧消耗序号。
+  // Reject oversized payloads before advancing the ratchet: the sender must not burn
+  // a sequence number on a frame the peer is guaranteed to refuse.
+  const plaintext = encode(payload) as Uint8Array;
+  if (plaintext.byteLength + SEQ_BYTES + NONCE_BYTES + 16 > MAX_FRAME_BYTES) {
+    throw new Error('载荷超出单帧大小上限');
+  }
 
   const seq = session.tx.nextSeq;
   const previousChain = session.tx.chain;
@@ -359,7 +394,7 @@ export async function sealFrame(
   const aad = enc(`crypta-chat:v3:${session.roomId}:${dir}:${seq}`);
 
   const ciphertext = s.crypto_aead_xchacha20poly1305_ietf_encrypt(
-    encode(payload) as Uint8Array,
+    plaintext,
     aad,
     null,
     nonce,
@@ -386,8 +421,9 @@ export async function openFrame(
 ): Promise<{ payload: WirePayload; gap: number }> {
   const s = await loadSodium();
   const rx = session.rx;
-  if (!rx || !session.sessionKey) throw new Error('会话密钥尚未建立');
+  if (!rx) throw new Error('会话密钥尚未建立');
   if (frame.byteLength < SEQ_BYTES + NONCE_BYTES + 16) throw new Error('帧长度无效');
+  if (frame.byteLength > MAX_FRAME_BYTES) throw new Error('帧长度超出协议上限');
 
   const seq = new DataView(frame.buffer, frame.byteOffset, frame.byteLength).getUint32(0, false);
   if (seq < rx.nextSeq) throw new Error('重放帧已拒绝');
@@ -439,17 +475,13 @@ export async function openFrame(
 
 /** 销毁会话材料（逐字节清零，含棘轮链） / Destroy session material (byte-wise zeroing, ratchet chains included) */
 export function destroySession(session: ChatSession): void {
-  session.sessionKey?.fill(0);
   session.tx?.chain.fill(0);
   session.rx?.chain.fill(0);
   session.privateKey.fill(0);
   session.psk?.fill(0);
-  session.sessionKey = null;
   session.tx = null;
   session.rx = null;
   session.peerPublicKey = null;
   session.safetyBadgeSeed = null;
   session.psk = null;
 }
-
-export const MAX_IMAGE_BYTES = 4 * 1024 * 1024;

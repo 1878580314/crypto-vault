@@ -14,6 +14,7 @@ import {
   sealFrame,
   openFrame,
   MAX_SEQ_GAP,
+  MAX_FRAME_BYTES,
   roomCodeOf,
   parseRoomCode,
   destroySession,
@@ -280,6 +281,26 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
     },
   },
   {
+    name: '超大帧：发送侧与接收侧都在 AEAD 前拒绝',
+    fn: async () => {
+      const { alice, bob } = await handshake(roomCodeOf(await createSession()));
+      const beforeTx = alice.tx!.nextSeq;
+      const beforeRx = bob.rx!.nextSeq;
+      await assert.rejects(
+        () => sealFrame(alice, { k: 'text', t: 'x'.repeat(MAX_FRAME_BYTES) }),
+        /上限/u,
+        '超限载荷必须被拒',
+      );
+      assert.equal(alice.tx!.nextSeq, beforeTx, '被拒载荷不得消耗发送序号');
+      await assert.rejects(
+        () => openFrame(bob, new Uint8Array(MAX_FRAME_BYTES + 1)),
+        /上限/u,
+        '超限帧必须被拒',
+      );
+      assert.equal(bob.rx!.nextSeq, beforeRx, '被拒帧不得推进接收状态');
+    },
+  },
+  {
     name: '房间码往返与 PSK 长度校验',
     fn: async () => {
       const session = await createSession();
@@ -288,8 +309,23 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       assert.equal(parsed.room, session.roomId);
       assert.equal(parsed.psk!.length, 32, 'PSK 必须是 256 位');
       await assert.rejects(() => createSession(`${session.roomId}.YWJjZA`), /预共享密钥长度/u, '非 32 字节 PSK 必须被拒');
+      await assert.rejects(() => createSession(session.roomId), /缺少预共享密钥/u, '裸房间码不得静默生成随机 PSK');
       assert.equal(peerPublicKeyFromText(publicKeyText(session)).length, 32);
       assert.ok(equalBytes(peerPublicKeyFromText(publicKeyText(session)), session.publicKey));
+    },
+  },
+  {
+    name: '徽章核验帧：verify 携带指纹前缀并完成往返',
+    fn: async () => {
+      const { alice, bob } = await handshake(roomCodeOf(await createSession()));
+      const confirm = await sealFrame(alice, { k: 'verify', fp: alice.safetyBadgeSeed!.slice(0, 16) });
+      const opened = await openFrame(bob, confirm.frame);
+      assert.deepEqual(opened.payload, { k: 'verify', fp: alice.safetyBadgeSeed!.slice(0, 16) });
+      // 指纹前缀必须等于接收方所见徽章前缀（同一 master）/ fp must match the receiver's badge prefix
+      assert.equal(alice.safetyBadgeSeed!.slice(0, 16), bob.safetyBadgeSeed!.slice(0, 16));
+      // 非法载荷（空指纹）在解码侧拒绝，且不得消耗接收棘轮序号 / A malformed fp is rejected at decode without burning rx state
+      const bad = await sealFrame(alice, { k: 'verify', fp: '' } as unknown as Parameters<typeof sealFrame>[1]);
+      await assert.rejects(openFrame(bob, bad.frame), /无效/);
     },
   },
   {
@@ -298,7 +334,6 @@ const tests: Array<{ name: string; fn: () => Promise<void> }> = [
       const { alice, bob } = await handshake(roomCodeOf(await createSession()));
       await sealFrame(alice, { k: 'text', t: 'bye' });
       destroySession(alice);
-      assert.equal(alice.sessionKey, null);
       assert.equal(alice.tx, null);
       assert.equal(alice.rx, null);
       assert.equal(alice.psk, null);

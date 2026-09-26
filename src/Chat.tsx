@@ -12,7 +12,6 @@
 import {
   ArrowRight,
   Check,
-  CheckCheck,
   Copy,
   Download,
   Link2,
@@ -84,7 +83,7 @@ interface SendFxState {
   cipherB: string;
 }
 
-type MotionMode = 'pointer' | 'sensor' | 'prompt' | 'denied' | 'none';
+type MotionMode = 'pointer' | 'sensor' | 'prompt' | 'ambient' | 'none';
 
 interface IncomingMediaTransfer {
   media: 'image' | 'video';
@@ -125,8 +124,8 @@ const newId = () =>
 
 const formatBytes = (bytes: number) => {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
 };
 
 const clockOf = (at: number) =>
@@ -140,7 +139,15 @@ const inviteLink = (session: ChatSession) => `${location.origin}/crypto/#chat=${
 /** 完整码 <room>.<psk> 或降级码 <room> / Full code <room>.<psk> or degraded <room> */
 const CODE_RE = /^[A-Za-z0-9_-]{16,64}(\.[A-Za-z0-9_-]{20,64})?$/;
 const WS_BUFFER_HIGH_WATER_BYTES = 4 * 1024 * 1024;
+// 发送缓冲长时间不降说明对端 TCP 已停滞（socket 仍 OPEN）：超时失败，避免媒体发送永远挂起。
+// A send buffer that never drains means the peer's TCP is stalled while the socket
+// still reads OPEN: time out instead of hanging the media send forever.
+const WS_BUFFER_STALL_TIMEOUT_MS = 30_000;
 const MEDIA_SEND_BYTES_PER_SECOND = 16 * 1024 * 1024;
+// 超长会话中无限追加会让 DOM 无限增长；达到上限后丢弃最旧的消息（媒体 URL 一并释放）。
+// An ever-growing DOM hurts long sessions; trim the oldest messages beyond the cap
+// (revoking their media URLs).
+const MAX_CHAT_MESSAGES = 500;
 const SEND_FX_MS = 240;
 const SEND_BUBBLE_REVEAL_MS = 155;
 const CIPHER_GLYPHS = '01A7F3C9E5B2D8#%&*+=<>?/\\[]{}▓▒░';
@@ -170,7 +177,7 @@ interface ByteRange {
  * Data lands in fixed blocks where overwrites apply in place; the final Blob needs no full copy.
  */
 class SparseMediaBuffer {
-  private readonly blocks = new Map<number, Uint8Array>();
+  private readonly blocks = new Map<number, Uint8Array<ArrayBuffer>>();
   private readonly coverage: ByteRange[] = [];
   private coveredBytes = 0;
   maxEnd = 0;
@@ -201,6 +208,11 @@ class SparseMediaBuffer {
     this.maxEnd = Math.max(this.maxEnd, end);
   }
 
+  /** 已覆盖的字节数（接收进度展示用） / Unique covered bytes (inbound progress display) */
+  get receivedBytes(): number {
+    return this.coveredBytes;
+  }
+
   isComplete(size: number): boolean {
     if (!Number.isSafeInteger(size) || size < 0 || this.maxEnd !== size || this.coveredBytes !== size) return false;
     if (size === 0) return this.coverage.length === 0;
@@ -215,7 +227,8 @@ class SparseMediaBuffer {
       const block = this.blocks.get(index);
       if (!block) throw new Error('媒体文件分块缺失');
       const length = Math.min(MEDIA_CHUNK_BYTES, size - index * MEDIA_CHUNK_BYTES);
-      parts.push((block.buffer as ArrayBuffer).slice(0, length));
+      // Blob 接受 TypedArray 视图，无需把每块再复制一份 / Blob takes TypedArray views; no per-block copy needed.
+      parts.push(block.subarray(0, length));
     }
     return new Blob(parts, { type });
   }
@@ -257,9 +270,15 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   const [phase, setPhase] = useState<Phase>('lobby');
   const [linkState, setLinkState] = useState<LinkState>('connecting');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [incomingTransfer, setIncomingTransfer] = useState<{ name: string; received: number } | null>(null);
   const [draft, setDraft] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [safetyBadgeSeed, setSafetyBadgeSeed] = useState<string | null>(null);
+  // 强制徽章核验：双方都在加密通道内确认（verify 帧）后对话才解锁。
+  // Forced badge verification: the conversation unlocks only after both sides confirm in-channel.
+  const [selfVerified, setSelfVerified] = useState(false);
+  const [peerVerified, setPeerVerified] = useState(false);
+  const [badgeOpenTick, setBadgeOpenTick] = useState(0);
   const [sending, setSending] = useState(false);
   const [starting, setStarting] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -283,19 +302,55 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   const startingRef = useRef(false);
   const incomingMediaRef = useRef(new Map<string, IncomingMediaTransfer>());
   const tiltBubbleRef = useRef<HTMLElement | null>(null);
+  // 消息列表跟随滚动：用户上翻阅读历史时不再被新消息拽回底部。
+  // Follow-scroll: users reading history are no longer yanked to the newest message.
+  const stickToBottomRef = useRef(true);
+  const incomingProgressAtRef = useRef(0);
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  const caretRef = useRef<{ start: number; end: number } | null>(null);
 
   useEffect(() => {
     if (initialRoom && phase === 'lobby') void start(initialRoom);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 会话（重）协商产生新徽章时重新锁定：MITM 只能在协商期插入，核验必须跟随每次协商。
+  // A new badge seed means re-verification is required — MITM can only appear during
+  // negotiation, so the check must follow every negotiation.
   useEffect(() => {
+    setSelfVerified(false);
+    setPeerVerified(false);
+  }, [safetyBadgeSeed]);
+
+  useEffect(() => {
+    const log = logRef.current;
+    if (!log) return;
+    const last = messages[messages.length - 1];
+    // 仅当用户本就停留在底部附近（或刚发出自己的消息）时才跟随滚动。
+    // Follow the scroll only while the user is already near the bottom (or sent a message).
+    if (!stickToBottomRef.current && !last?.mine) return;
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    logRef.current?.scrollTo({
-      top: logRef.current.scrollHeight,
+    log.scrollTo({
+      top: log.scrollHeight,
       behavior: reducedMotion ? 'auto' : 'smooth',
     });
   }, [messages]);
+
+  const onLogScroll = () => {
+    const log = logRef.current;
+    if (!log) return;
+    stickToBottomRef.current = log.scrollTop + log.clientHeight >= log.scrollHeight - 48;
+  };
+
+  /** 追加消息并裁剪超长会话：被丢弃消息的 objectURL 立即释放 / Append with a cap; dropped messages release their objectURLs. */
+  const appendMessage = (message: ChatMessage) => {
+    setMessages((prev) => {
+      if (prev.length < MAX_CHAT_MESSAGES) return [...prev, message];
+      const dropped = prev.slice(0, prev.length - MAX_CHAT_MESSAGES + 1);
+      for (const old of dropped) if (old.mediaUrl) URL.revokeObjectURL(old.mediaUrl);
+      return [...prev.slice(dropped.length), message];
+    });
+  };
 
   // 动态玻璃光照：桌面端只更新悬停气泡，合成层数量保持恒定；
   // 移动端转向时以 ≤30 fps 更新光向量，气泡几何保持静态以稳定帧率。
@@ -318,7 +373,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     if (finePointer) setMotionMode('pointer');
     else if (typeof orientationCtor !== 'undefined') {
       setMotionMode(typeof orientationCtor.requestPermission === 'function' ? 'prompt' : 'sensor');
-    } else setMotionMode('none');
+    } else setMotionMode('ambient'); // 无陀螺仪设备：默认光斑漂移，玻璃保持动态
 
     let raf = 0;
     let pendingPointer: PointerEvent | null = null;
@@ -375,8 +430,21 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     };
   }, [phase]);
 
+  // iOS 只允许在用户手势内申请陀螺仪权限：首次触碰聊天面板即自动申请一次，
+  // 拒绝后回退到 ambient 漂移，而非保持静态。
+  // iOS grants motion access only inside a user gesture — auto-request on the first touch,
+  // then fall back to ambient drift if denied instead of staying static.
   useEffect(() => {
-    if (motionMode !== 'sensor') return;
+    if (motionMode !== 'prompt') return;
+    const shell = shellRef.current;
+    if (!shell) return;
+    const onFirstTouch = () => void enableDeviceMotion();
+    shell.addEventListener('pointerdown', onFirstTouch, { once: true });
+    return () => shell.removeEventListener('pointerdown', onFirstTouch);
+  }, [motionMode, phase]);
+
+  useEffect(() => {
+    if (motionMode !== 'sensor' && motionMode !== 'ambient') return;
     const shell = shellRef.current;
     if (!shell) return;
     let baseGamma: number | null = null;
@@ -392,6 +460,12 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
       raf = requestAnimationFrame(paint);
       if (now - lastPaint < 33) return;
       lastPaint = now;
+      if (motionMode === 'ambient') {
+        // 缓慢利萨茹轨迹，视觉上近似陀螺仪光照，开销一致（同一 paint 循环）。
+        // A slow lissajous path approximates gyroscope lighting at the same paint cost.
+        targetX = 50 + Math.sin(now / 3600) * 30;
+        targetY = 18 + Math.cos(now / 2900) * 10;
+      }
       currentX += (targetX - currentX) * 0.22;
       currentY += (targetY - currentY) * 0.22;
       shell.style.setProperty('--glass-light-x', `${currentX.toFixed(1)}%`);
@@ -406,7 +480,9 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
       targetX = 50 + gamma * 1.35;
       targetY = 18 + beta * 1.1;
     };
-    window.addEventListener('deviceorientation', onOrientation, { passive: true });
+    if (motionMode === 'sensor') {
+      window.addEventListener('deviceorientation', onOrientation, { passive: true });
+    }
     raf = requestAnimationFrame(paint);
     return () => {
       window.removeEventListener('deviceorientation', onOrientation);
@@ -536,20 +612,53 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
 
   function connect(session: ChatSession) {
     leavingRef.current = false;
+    // 手动/前台重连时可能仍有自动重连定时器挂起：先清掉，避免到点后再开一条 socket。
+    // A pending auto-reconnect may still be armed during a manual/foreground reconnect;
+    // disarm it first so it cannot open a second socket later.
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    // 关闭仍存活的旧 socket 并摘掉全部回调，杜绝双连接下陈旧 socket 继续写状态。
+    // Detach and close any still-living socket so stale handlers cannot mutate state
+    // under a duplicate connection.
+    const previous = wsRef.current;
+    wsRef.current = null;
+    if (previous && previous.readyState !== WebSocket.CLOSED) {
+      previous.onopen = null;
+      previous.onmessage = null;
+      previous.onclose = null;
+      previous.onerror = null;
+      try {
+        previous.close();
+      } catch {
+        /* 已断开 / Already gone */
+      }
+    }
+    // 我方重连后旧 socket 的传输上下文全部作废：半完成的传入媒体若不清，
+    // 会占满并发槽位并让后续 media-start 永远失败（对端公钥不变时不会触发 rekey 清理）。
+    // A local reconnect voids every in-progress inbound transfer; without this cleanup,
+    // dead entries fill the concurrency cap and every later media-start fails
+    // (no rekey fires when the peer key is unchanged).
+    incomingMediaRef.current.clear();
+    setIncomingTransfer(null);
     setLinkState('connecting');
     const ws = new WebSocket(wsUrl());
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
 
     const sendHello = async () => {
-      if (ws.readyState !== WebSocket.OPEN) return;
+      if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ t: 'hello', pub: publicKeyText(session), mac: await helloMac(session) }));
     };
 
     const addSystem = (text: string) =>
-      setMessages((prev) => [...prev, { id: newId(), mine: false, at: Date.now(), kind: 'system', text }]);
+      appendMessage({ id: newId(), mine: false, at: Date.now(), kind: 'system', text });
 
-    ws.onopen = () => ws.send(JSON.stringify({ t: 'join', room: session.roomId }));
+    ws.onopen = () => {
+      if (wsRef.current !== ws) return;
+      ws.send(JSON.stringify({ t: 'join', room: session.roomId }));
+    };
 
     let receiveQueue = Promise.resolve();
     const handleMessage = async (event: MessageEvent<string | ArrayBuffer>) => {
@@ -579,12 +688,13 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             // 必须重新协商，否则双方棘轮错位、后续所有帧认证失败。
             // A peer reloaded after mobile background eviction gets a fresh key pair: renegotiate,
             // or the ratchets desync and every later frame fails authentication.
-            const rekey = session.sessionKey !== null && session.peerPublicKey !== null &&
+            const rekey = session.tx !== null && session.peerPublicKey !== null &&
               !equalBytes(session.peerPublicKey, peer);
-            if (!session.sessionKey || rekey) {
+            if (!session.tx || rekey) {
               await establishSession(session, peer);
               if (rekey) {
                 incomingMediaRef.current.clear();
+                setIncomingTransfer(null);
                 // 作废旧会话的我方消息序号，避免新会话已读回执误标旧消息 / Void old tx seqs so new-session receipts cannot mislabel old messages
                 setMessages((prev) => prev.map((m) => (m.mine ? { ...m, seq: undefined } : m)));
                 addSystem('对方重新连接，已重新建立加密通道（视觉安全徽章已更新，请再次核验）');
@@ -597,6 +707,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           }
         } else if (msg.t === 'peer-leave') {
           incomingMediaRef.current.clear();
+          setIncomingTransfer(null);
           setLinkState('peer-left');
         }
         return;
@@ -611,6 +722,23 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           setMessages((prev) =>
             prev.map((m) => (m.mine && m.seq !== undefined && m.seq < payload.upTo && !m.read ? { ...m, read: true } : m)),
           );
+          return;
+        }
+
+        if (payload.k === 'verify') {
+          // 对方确认帧必须携带当前会话指纹：旧会话的迟到确认不能解锁新会话；
+          // 指纹不符说明对方 UI 异常或被篡改，保持锁定并告警。
+          // The peer's confirmation must name the current session fingerprint: a stale
+          // confirm from a superseded session cannot unlock the new one; a mismatch means
+          // a broken or tampered client — stay locked and warn.
+          if (payload.fp === session.safetyBadgeSeed?.slice(0, 16)) {
+            setPeerVerified((was) => {
+              if (!was) toast.success('对方已确认安全徽章一致');
+              return true;
+            });
+          } else {
+            toast.error('对方核验的徽章与当前会话不符，请重新比对');
+          }
           return;
         }
 
@@ -632,6 +760,9 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             legacyOffset: 0,
             nextIndex: 0,
           });
+          // 接收侧大文件静默缓冲期间给一个可见进度 / Show progress while a large inbound file buffers silently.
+          incomingProgressAtRef.current = 0;
+          setIncomingTransfer({ name: payload.name, received: 0 });
           return;
         }
 
@@ -645,11 +776,17 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           transfer.buffer.write(position, payload.d);
           if (payload.offset === undefined) transfer.legacyOffset += payload.d.byteLength;
           transfer.nextIndex += 1;
+          const now = performance.now();
+          if (now - incomingProgressAtRef.current > 120) {
+            incomingProgressAtRef.current = now;
+            setIncomingTransfer({ name: transfer.name, received: transfer.buffer.receivedBytes });
+          }
           return;
         }
 
         if (payload.k === 'media-cancel') {
           incomingMediaRef.current.delete(payload.id);
+          setIncomingTransfer(null);
           return;
         }
 
@@ -663,49 +800,41 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             throw new Error('媒体传输长度校验失败');
           }
           incomingMediaRef.current.delete(payload.id);
+          setIncomingTransfer(null);
           const blob = transfer.buffer.toBlob(payload.size, transfer.mime);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: newId(),
-              mine: false,
-              at: Date.now(),
-              kind: transfer.media,
-              mediaUrl: trackUrl(URL.createObjectURL(blob)),
-              mediaMime: transfer.mime,
-              mediaName: transfer.name,
-              mediaSize: payload.size,
-              mediaOriginalSize: transfer.originalSize,
-              mediaCompressed: transfer.compressed,
-            },
-          ]);
+          appendMessage({
+            id: newId(),
+            mine: false,
+            at: Date.now(),
+            kind: transfer.media,
+            mediaUrl: trackUrl(URL.createObjectURL(blob)),
+            mediaMime: transfer.mime,
+            mediaName: transfer.name,
+            mediaSize: payload.size,
+            mediaOriginalSize: transfer.originalSize,
+            mediaCompressed: transfer.compressed,
+          });
           sendReadReceipt();
           return;
         }
 
         if (payload.k === 'text') {
-          setMessages((prev) => [
-            ...prev,
-            { id: newId(), mine: false, at: Date.now(), kind: 'text', text: payload.t },
-          ]);
+          appendMessage({ id: newId(), mine: false, at: Date.now(), kind: 'text', text: payload.t });
         } else if (payload.k === 'image') {
           // 兼容旧版单帧图片消息。 / Legacy single-frame image message.
-          const blob = new Blob([payload.d.slice().buffer as ArrayBuffer], { type: payload.mime });
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: newId(),
-              mine: false,
-              at: Date.now(),
-              kind: 'image',
-              mediaUrl: trackUrl(URL.createObjectURL(blob)),
-              mediaMime: payload.mime,
-              mediaName: payload.name,
-              mediaSize: payload.d.byteLength,
-              mediaOriginalSize: payload.d.byteLength,
-              mediaCompressed: false,
-            },
-          ]);
+          const blob = new Blob([payload.d.slice()], { type: payload.mime });
+          appendMessage({
+            id: newId(),
+            mine: false,
+            at: Date.now(),
+            kind: 'image',
+            mediaUrl: trackUrl(URL.createObjectURL(blob)),
+            mediaMime: payload.mime,
+            mediaName: payload.name,
+            mediaSize: payload.d.byteLength,
+            mediaOriginalSize: payload.d.byteLength,
+            mediaCompressed: false,
+          });
         }
         // 立即回执已读（对方显示双勾） / Acknowledge read immediately (the peer shows double ticks)
         sendReadReceipt();
@@ -723,13 +852,18 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     // WS events do not await async handlers; media chunks arrive fast, so the receive ratchet
     // and assembly state must advance serially or openFrame() calls race on the same rx.chain.
     ws.onmessage = (event) => {
-      receiveQueue = receiveQueue.then(() => handleMessage(event)).catch((error) => {
+      if (wsRef.current !== ws) return; // 陈旧 socket：后续更新会污染共享会话 / Stale socket: updates would corrupt the shared session
+      // 已入队未执行的帧同样要按 socket 身份过滤：重连后旧 socket 的排队帧不得再解密。
+      // Queued-but-unrun frames are filtered by socket identity too: a stale socket's
+      // backlog must not decrypt after a reconnect.
+      receiveQueue = receiveQueue.then(() => (wsRef.current === ws ? handleMessage(event) : undefined)).catch((error) => {
         console.error('chat receive queue failed', error);
       });
     };
 
     ws.onclose = (event) => {
-      if (wsRef.current === ws) wsRef.current = null;
+      if (wsRef.current !== ws) return; // 陈旧 socket 不得覆盖新连接状态或额外挂重连 / A stale socket must not overwrite the new connection's state or arm another reconnect
+      wsRef.current = null;
       if (leavingRef.current || !sessionRef.current) return;
       if (event.code === 1013) {
         // 房间满：可能是未被服务器察觉的僵尸连接占座，稍后重试 / Room full: likely an unnoticed zombie connection; retry later
@@ -740,7 +874,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         scheduleReconnect(2500);
       }
     };
-    ws.onerror = () => setLinkState('error');
+    ws.onerror = () => {
+      if (wsRef.current !== ws) return;
+      setLinkState('error');
+    };
   }
 
   const equalBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
@@ -772,7 +909,10 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
       const ws = wsRef.current;
-      if (ws && ws.readyState !== WebSocket.OPEN && sessionRef.current && !leavingRef.current) {
+      // 只对已关闭的连接触发重连：CONNECTING/OPEN 中的 socket 被误杀会让握手永远重复。
+      // Reconnect only when the socket is fully closed: killing a CONNECTING/OPEN socket
+      // would loop the handshake forever.
+      if ((!ws || ws.readyState === WebSocket.CLOSED) && sessionRef.current && !leavingRef.current) {
         reconnectAttemptsRef.current = 0;
         connect(sessionRef.current);
       }
@@ -785,18 +925,29 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   async function send(payload: WirePayload): Promise<{ ok: boolean; seq?: number }> {
     const session = sessionRef.current;
     const ws = wsRef.current;
-    if (!session?.sessionKey || !ws || ws.readyState !== WebSocket.OPEN) {
+    if (!session?.tx || !ws || ws.readyState !== WebSocket.OPEN) {
       toast.error('加密连接未就绪');
       return { ok: false };
     }
 
     // WebSocket 没有标准 drain 事件；媒体分片发送时主动观察 bufferedAmount，
     // 把网络背压一路传回视频编码器，避免慢网络把数百 MB 数据堆进 JS 内存。
+    // 若缓冲长时间不见下降（对端 TCP 停滞但 socket 仍 OPEN），按传输失败返回而非永久挂起。
     // WebSocket has no standard drain event; watching bufferedAmount while sending media chunks
     // feeds backpressure into the encoder instead of piling hundreds of MB in JS memory.
+    // A buffer that never drains means the peer's TCP is stalled: fail the send rather
+    // than hang forever.
+    let lastBuffered = ws.bufferedAmount;
+    let lastDrainAt = performance.now();
     while (ws.bufferedAmount > WS_BUFFER_HIGH_WATER_BYTES) {
       await new Promise((resolve) => window.setTimeout(resolve, 18));
       if (ws.readyState !== WebSocket.OPEN) return { ok: false };
+      if (ws.bufferedAmount < lastBuffered) {
+        lastBuffered = ws.bufferedAmount;
+        lastDrainAt = performance.now();
+      } else if (performance.now() - lastDrainAt > WS_BUFFER_STALL_TIMEOUT_MS) {
+        return { ok: false };
+      }
     }
 
     const { frame, seq } = await sealFrame(session, payload);
@@ -898,15 +1049,22 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     if (!compression) return null;
 
     const id = newId();
-    await sendRequired({
-      k: 'media-start',
-      id,
-      media: 'video',
-      mime: compression.mime,
-      name: compression.name,
-      originalSize: file.size,
-      compressed: true,
-    });
+    try {
+      await sendRequired({
+        k: 'media-start',
+        id,
+        media: 'video',
+        mime: compression.mime,
+        name: compression.name,
+        originalSize: file.size,
+        compressed: true,
+      });
+    } catch (error) {
+      // media-start 失败时 execute() 不会运行，Mediabunny input 必须在这里释放。
+      // execute() never runs when media-start fails; dispose the Mediabunny input here.
+      compression.dispose();
+      throw error;
+    }
     const writer = createMediaChunkWriter(id);
     const localBuffer = new SparseMediaBuffer();
 
@@ -944,6 +1102,19 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     }
   }
 
+  /** 我方确认徽章一致：本地标记 + 向对方发送绑定当前指纹的 verify 帧。 */
+  function confirmBadge() {
+    const seed = sessionRef.current?.safetyBadgeSeed;
+    if (!seed || selfVerified) return;
+    setSelfVerified(true);
+    // send() 失败仅意味着对方未收到确认；双方确认前对话本就锁定，可稍后重试。
+    void send({ k: 'verify', fp: seed.slice(0, 16) })
+      .then((result) => {
+        if (!result.ok) toast.error('确认通知未能送达，请重新打开徽章再确认一次');
+      })
+      .catch(() => toast.error('确认通知未能送达，请重新打开徽章再确认一次'));
+  }
+
   async function enableDeviceMotion() {
     const orientationCtor = window.DeviceOrientationEvent as typeof DeviceOrientationEvent & {
       requestPermission?: () => Promise<'granted' | 'denied'>;
@@ -958,18 +1129,18 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         setMotionMode('sensor');
         toast.success('动态玻璃已启用');
       } else {
-        setMotionMode('denied');
-        toast.info('未启用陀螺仪，玻璃光泽将保持静态');
+        setMotionMode('ambient');
+        toast.info('未启用陀螺仪，已切换为自动光泽漂移');
       }
     } catch {
-      setMotionMode('denied');
+      setMotionMode('ambient');
       toast.info('浏览器未授予设备方向权限');
     }
   }
 
   async function sendText() {
     const text = draft.trim();
-    if (!text || sending) return;
+    if (!text || sending || !chatReady) return;
     const fxId = newId();
     setSendFx({
       id: fxId,
@@ -988,10 +1159,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         wait(revealDelay),
       ]);
       if (result.ok) {
-        setMessages((prev) => [
-          ...prev,
-          { id: newId(), mine: true, at: Date.now(), kind: 'text', text, seq: result.seq, entrance: 'send' },
-        ]);
+        appendMessage({ id: newId(), mine: true, at: Date.now(), kind: 'text', text, seq: result.seq, entrance: 'send' });
       } else {
         setDraft(text);
       }
@@ -1009,7 +1177,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
   }
 
   async function sendMedia(file: File | undefined) {
-    if (!file) return;
+    if (!file || !chatReady || sending) return;
     const media = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null;
     if (!media) return toast.error('仅支持图片或视频文件');
     setSending(true);
@@ -1040,22 +1208,19 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             detail: `${formatBytes(sent)} / ${formatBytes(total)}`,
           }),
         );
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: newId(),
-            mine: true,
-            at: Date.now(),
-            kind: 'image',
-            mediaUrl: trackUrl(URL.createObjectURL(prepared.file)),
-            mediaMime: result.mime,
-            mediaName: result.name,
-            mediaSize: result.size,
-            mediaOriginalSize: prepared.originalSize,
-            mediaCompressed: prepared.compressed,
-            seq: result.seq,
-          },
-        ]);
+        appendMessage({
+          id: newId(),
+          mine: true,
+          at: Date.now(),
+          kind: 'image',
+          mediaUrl: trackUrl(URL.createObjectURL(prepared.file)),
+          mediaMime: result.mime,
+          mediaName: result.name,
+          mediaSize: result.size,
+          mediaOriginalSize: prepared.originalSize,
+          mediaCompressed: prepared.compressed,
+          seq: result.seq,
+        });
         if (prepared.compressed) {
           toast.success(`图片已自动压缩 ${formatBytes(prepared.originalSize)} → ${formatBytes(result.size)}`);
         }
@@ -1081,26 +1246,23 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         }));
       }
 
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: newId(),
-          mine: true,
-          at: Date.now(),
-          kind: 'video',
-          // 压缩路径必须预览“实际发送出去的文件”：源视频可能是 HEVC 等浏览器
-          // 无法直接播放的格式，继续引用原文件会错误显示 0:00。
-          // The compressed path must preview the file actually being sent: source videos may be
-          // HEVC or otherwise unplayable, and keeping the original reference would show 0:00.
-          mediaUrl: trackUrl(URL.createObjectURL(result.localBlob ?? file)),
-          mediaMime: result.mime,
-          mediaName: result.name,
-          mediaSize: result.size,
-          mediaOriginalSize: file.size,
-          mediaCompressed: result.size < file.size,
-          seq: result.seq,
-        },
-      ]);
+      appendMessage({
+        id: newId(),
+        mine: true,
+        at: Date.now(),
+        kind: 'video',
+        // 压缩路径必须预览“实际发送出去的文件”：源视频可能是 HEVC 等浏览器
+        // 无法直接播放的格式，继续引用原文件会错误显示 0:00。
+        // The compressed path must preview the file actually being sent: source videos may be
+        // HEVC or otherwise unplayable, and keeping the original reference would show 0:00.
+        mediaUrl: trackUrl(URL.createObjectURL(result.localBlob ?? file)),
+        mediaMime: result.mime,
+        mediaName: result.name,
+        mediaSize: result.size,
+        mediaOriginalSize: file.size,
+        mediaCompressed: result.size < file.size,
+        seq: result.seq,
+      });
       if (result.size < file.size) {
         toast.success(`视频已自动压缩 ${formatBytes(file.size)} → ${formatBytes(result.size)}`);
       }
@@ -1132,8 +1294,30 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
     setSafetyBadgeSeed(null);
     setJoinCode('');
     setMediaProgress(null);
+    setIncomingTransfer(null);
     setSendFx(null);
   }
+
+  /** 在光标处插入表情（面板抢焦后凭缓存的选区），并回焦输入框。
+   *  Insert the emoji at the remembered caret (the picker steals focus) and refocus the input. */
+  const insertEmoji = (emoji: string) => {
+    const el = draftRef.current;
+    const stored = caretRef.current;
+    // 无记录的选区且输入框未聚焦时追加到末尾（对齐旧行为） / Append when no caret was
+    // recorded and the input is unfocused (matches the previous behavior).
+    const domCaret = el && document.activeElement === el ? el.selectionStart : draft.length;
+    const start = Math.min(stored?.start ?? domCaret, draft.length);
+    const end = Math.min(Math.max(stored?.end ?? domCaret, start), draft.length);
+    const caret = start + emoji.length;
+    caretRef.current = { start: caret, end: caret };
+    setDraft(draft.slice(0, start) + emoji + draft.slice(end));
+    requestAnimationFrame(() => {
+      const target = draftRef.current;
+      if (!target) return;
+      target.focus();
+      target.setSelectionRange(caret, caret);
+    });
+  };
 
   const copy = async (value: string, label: string) => {
     try {
@@ -1200,6 +1384,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
 
   /* ---------------- Room 房间 ---------------- */
   const secure = linkState === 'secure';
+  const verified = selfVerified && peerVerified;
+  const chatReady = secure && verified;
   return (
     <section
       ref={shellRef}
@@ -1210,7 +1396,16 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         <div className="chat-header-left">
           <span className={`chat-status-dot ${secure ? 'ok' : 'warn'} ${linkState === 'connecting' ? 'pulse' : ''}`} aria-hidden="true" />
           <span className="chat-status-text" role="status" aria-live="polite">{LINK_TEXT[linkState]}</span>
-          {safetyBadgeSeed && <SafetyBadge seed={safetyBadgeSeed} pskProtected={!degraded} />}
+          {safetyBadgeSeed && (
+            <SafetyBadge
+              seed={safetyBadgeSeed}
+              pskProtected={!degraded}
+              selfVerified={selfVerified}
+              peerVerified={peerVerified}
+              onConfirm={confirmBadge}
+              openTick={badgeOpenTick}
+            />
+          )}
         </div>
         <div className="chat-header-right">
           {motionMode === 'prompt' && (
@@ -1264,10 +1459,24 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         </div>
       ) : null}
 
-      <div className="chat-log" ref={logRef} aria-live="polite" aria-label="加密聊天消息">
+      {secure && !verified && (
+        <div className="chat-notice chat-verify-notice" role="status">
+          <ShieldCheck size={16} />
+          <span>
+            {selfVerified
+              ? '你已确认徽章一致，等待对方确认后解锁对话。'
+              : '对话已锁定：请先与对方比对视觉安全徽章。'}
+          </span>
+          <button type="button" onClick={() => setBadgeOpenTick((tick) => tick + 1)}>
+            {selfVerified ? '查看徽章' : '去核验'}
+          </button>
+        </div>
+      )}
+
+      <div className="chat-log" ref={logRef} onScroll={onLogScroll} aria-live="polite" aria-label="加密聊天消息">
         <div className="chat-log-stage" ref={logStageRef}>
-          {messages.length === 0 && secure && (
-            <div className="chat-empty">已建立加密通道。点击顶部视觉安全徽章，与对方核验一致后再交流敏感内容。</div>
+          {messages.length === 0 && chatReady && (
+            <div className="chat-empty">徽章核验完成，加密通道就绪。所有消息仅存内存，关闭页面即焚。</div>
           )}
           {messages.map((message, index) => {
             if (message.kind === 'system') {
@@ -1359,8 +1568,8 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
                 <span className="chat-meta">
                   {clockOf(message.at)}
                   {message.mine && (
-                    <span className="chat-ticks" title={message.read ? '已读' : '已送达'}>
-                      {message.read ? <CheckCheck size={13} strokeWidth={2.6} /> : <Check size={13} strokeWidth={2.6} />}
+                    <span className={`chat-ticks${message.read ? ' read' : ''}`}>
+                      {message.read ? '已读' : '已送达'}
                     </span>
                   )}
                 </span>
@@ -1390,11 +1599,20 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         </div>
       )}
 
+      {incomingTransfer && (
+        <div className="chat-transfer-progress" role="status" aria-live="polite">
+          <div className="chat-transfer-progress-copy">
+            <span><Loader2 className="spin" size={13} /> 正在接收 {incomingTransfer.name || '媒体文件'}</span>
+            <em>{formatBytes(incomingTransfer.received)}</em>
+          </div>
+        </div>
+      )}
+
       <div className="chat-composer">
         <button
           type="button"
           className="chat-icon-action"
-          disabled={!secure || sending}
+          disabled={!chatReady || sending}
           onClick={() => fileRef.current?.click()}
           title="发送图片或视频（大文件自动压缩）"
           aria-label="发送图片或视频"
@@ -1411,7 +1629,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         <div className="chat-input-wrap">
           {emojiOpen && (
             <EmojiPicker
-              onPick={(emoji) => setDraft((value) => value + emoji)}
+              onPick={insertEmoji}
               onClose={() => setEmojiOpen(false)}
             />
           )}
@@ -1431,12 +1649,17 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
             </div>
           )}
           <textarea
+            ref={draftRef}
             value={draft}
             rows={1}
-            placeholder={secure ? '输入消息，Enter 发送…' : '等待加密通道建立…'}
+            placeholder={secure ? (verified ? '输入消息，Enter 发送…' : '核验安全徽章后开始对话…') : '等待加密通道建立…'}
             aria-label="聊天消息"
-            disabled={!secure || sending}
+            disabled={!chatReady || sending}
             onChange={(event) => setDraft(event.target.value)}
+            onSelect={() => {
+              const el = draftRef.current;
+              if (el) caretRef.current = { start: el.selectionStart, end: el.selectionEnd };
+            }}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
@@ -1447,7 +1670,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
           <button
             type="button"
             className={`chat-emoji-btn ${emojiOpen ? 'active' : ''}`}
-            disabled={!secure}
+            disabled={!chatReady}
             onClick={() => setEmojiOpen((value) => !value)}
             aria-label="表情"
             title="表情"
@@ -1458,7 +1681,7 @@ export default function Chat({ initialRoom }: { initialRoom?: string }) {
         <button
           type="button"
           className="chat-send"
-          disabled={!secure || !draft.trim() || sending}
+          disabled={!chatReady || !draft.trim() || sending}
           onClick={() => void sendText()}
           aria-label="发送消息"
         >

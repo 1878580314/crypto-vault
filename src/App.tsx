@@ -32,6 +32,7 @@ import { Toaster, toast } from 'sonner';
 import KeyExchange from './KeyExchange';
 import {
   decodeUtf8,
+  bytesToArrayBuffer,
   createPassphraseKdf,
   decryptPayload,
   derivePassphraseKey,
@@ -114,7 +115,8 @@ const algorithms: Array<{
 
 const formatBytes = (bytes: number) => {
   if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  // 1024 进制统一标 IEC 单位，与完整性校验页一致 / Binary units labelled consistently (KiB/MiB) across pages.
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
   const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
   const value = bytes / 1024 ** index;
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`;
@@ -258,9 +260,12 @@ export default function App() {
     try {
       const key = parseKey(keyValue);
       setKeyValid(true);
-      void keyFingerprint(key).then((value) => {
-        if (active) setFingerprint(value);
-      });
+      void keyFingerprint(key)
+        .then((value) => {
+          if (active) setFingerprint(value);
+        })
+        // 指纹算完即清零解析出的密钥副本 / Zero the parsed key copy as soon as fingerprinting settles.
+        .finally(() => key.fill(0));
     } catch {
       setKeyValid(false);
       setFingerprint('—');
@@ -364,7 +369,9 @@ export default function App() {
   };
 
   const handleFile = (file: File | undefined) => {
-    if (!file) return;
+    // 处理中途换文件会让正在跑的流式任务写出错文件；忽略 busy 期间的选择。
+    // Switching files mid-run would corrupt an in-flight streaming job; ignore picks while busy.
+    if (!file || busy) return;
     const inspectionId = ++fileInspectionId.current;
     setSelectedFile(file);
     setFileResult(null);
@@ -372,8 +379,17 @@ export default function App() {
     if (operation === 'decrypt') {
       setSelectedFileFormat('checking');
       void inspectStreamingFile(file)
-        .then(() => {
-          if (inspectionId === fileInspectionId.current) setSelectedFileFormat('stream');
+        .then((header) => {
+          if (inspectionId !== fileInspectionId.current) return;
+          setSelectedFileFormat('stream');
+          // 按密文头的 KDF 信息预选密钥模式，避免凭据错配等到保存选择器弹完才暴露。
+          // Preselect the key mode from the header's KDF info so a credential mismatch
+          // surfaces before the save picker, not after.
+          const requiredMode: KeyMode = header.keyDerivation.type === 'argon2id' ? 'passphrase' : 'raw';
+          if (keyMode !== requiredMode) {
+            setKeyMode(requiredMode);
+            toast.info(requiredMode === 'passphrase' ? '该密文使用文本口令保护，已切换为「文本口令」' : '该密文使用原始密钥，已切换为「256 位密钥」');
+          }
         })
         .catch(() => {
           if (inspectionId === fileInspectionId.current) setSelectedFileFormat('legacy');
@@ -433,7 +449,7 @@ export default function App() {
       throw new Error('仍在识别密文格式，请稍后重试。');
     }
     if (operation === 'decrypt' && selectedFileFormat === 'legacy' && selectedFile.size >= STREAM_THRESHOLD_BYTES) {
-      throw new Error('该文件是旧版 V1 整体 AEAD 容器，无法低内存流式解密。V2 流式容器可处理多 GB 文件。');
+      throw new Error('该文件不是 CRYPTA V2 流式密文（或已损坏），且超过 64 MiB 无法整体载入内存解密。');
     }
 
     if (useStreaming) {
@@ -510,7 +526,7 @@ export default function App() {
           createdAt: new Date().toISOString(),
         };
         setFileResult({
-          blob: new Blob([new Uint8Array(encrypted).buffer], { type: 'application/x-crypta' }),
+          blob: new Blob([bytesToArrayBuffer(encrypted)], { type: 'application/x-crypta' }),
           name: `${selectedFile.name}.crypta`,
           meta,
         });
@@ -527,7 +543,7 @@ export default function App() {
       const decrypted = await decryptPayload(data, key);
       if (decrypted.meta.kind !== 'file') throw new Error('该密文包含文本数据，请切换到文本模式解密。');
       setFileResult({
-        blob: new Blob([new Uint8Array(decrypted.data).buffer], { type: decrypted.meta.mime || 'application/octet-stream' }),
+        blob: new Blob([bytesToArrayBuffer(decrypted.data)], { type: decrypted.meta.mime || 'application/octet-stream' }),
         name: decrypted.meta.name || selectedFile.name.replace(/\.crypta$/u, '') || 'decrypted.bin',
         meta: decrypted.meta,
       });
@@ -765,10 +781,10 @@ export default function App() {
               ) : (
                 <>
                   <div
-                    className={`dropzone ${dragging ? 'dragging' : ''} ${selectedFile ? 'has-file' : ''}`}
+                    className={`dropzone ${dragging ? 'dragging' : ''} ${selectedFile ? 'has-file' : ''} ${busy ? 'busy' : ''}`}
                     onDragOver={(event) => {
                       event.preventDefault();
-                      setDragging(true);
+                      if (!busy) setDragging(true);
                     }}
                     onDragLeave={() => setDragging(false)}
                     onDrop={(event) => {
@@ -776,11 +792,11 @@ export default function App() {
                       setDragging(false);
                       handleFile(event.dataTransfer.files[0]);
                     }}
-                    onClick={() => !selectedFile && fileInputRef.current?.click()}
+                    onClick={() => !selectedFile && !busy && fileInputRef.current?.click()}
                     role="button"
                     tabIndex={0}
                     onKeyDown={(event) => {
-                      if (!selectedFile && (event.key === 'Enter' || event.key === ' ')) fileInputRef.current?.click();
+                      if (!selectedFile && !busy && (event.key === 'Enter' || event.key === ' ')) fileInputRef.current?.click();
                     }}
                   >
                     <input

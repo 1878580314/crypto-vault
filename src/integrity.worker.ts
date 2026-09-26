@@ -10,7 +10,7 @@ import {
 } from 'hash-wasm';
 import { Blake3Hasher, init as initBlake3 } from '@fuzdev/blake3_wasm';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import { type AlgorithmId } from './integrity';
+import { type AlgorithmId } from './integrity.ts';
 
 const CHUNK_BYTES = 8 * 1024 * 1024;
 // 两个 8 MiB 读请求足以覆盖单块 SIMD BLAKE3 计算时间；更多并发在同一磁盘上

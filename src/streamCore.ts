@@ -411,7 +411,15 @@ export async function runBoundedPipeline<Prepared>(
 ): Promise<void> {
   const inFlight = new Map<number, Promise<Prepared>>();
   const schedule = (index: number) => {
-    if (index < total) inFlight.set(index, prepare(index));
+    if (index >= total) return;
+    const prepared = prepare(index);
+    // 主循环提前抛错/取消时，仍在途的准备工作会无人 await：先挂一个空 rejection 处理器，
+    // 避免冒出 unhandled rejection；真正的错误仍经由 inFlight.get(index) 正常传播。
+    // When the main loop throws early, in-flight preparations would reject unobserved:
+    // attach a no-op rejection handler to silence noise; the real error still propagates
+    // via inFlight.get(index).
+    prepared.catch(() => {});
+    inFlight.set(index, prepared);
   };
   for (let index = 0; index < Math.min(concurrency, total); index += 1) schedule(index);
   for (let index = 0; index < total; index += 1) {

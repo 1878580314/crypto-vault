@@ -39,5 +39,21 @@ export default defineConfig({
   build: {
     target: 'es2022',
     sourcemap: false,
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            // 固定命名主线程的 libsodium chunk，便于识别与缓存核对。
+            // 注意：Worker 构建是独立的打包图（worker.rolldownOptions），其内嵌副本
+            // 目前无法与主线程共享同一文件，属打包器架构限制。
+            // Give the main-thread libsodium chunk a stable name for identification and
+            // cache auditing. The worker build is a separate bundling graph
+            // (worker.rolldownOptions) whose embedded copy cannot be merged with this
+            // one — a bundler architecture limitation.
+            { name: 'libsodium', test: /libsodium/ },
+          ],
+        },
+      },
+    },
   },
 });
